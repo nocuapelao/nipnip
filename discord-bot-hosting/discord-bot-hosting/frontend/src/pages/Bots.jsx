@@ -7,7 +7,8 @@ const TYPE_LABELS = {
   webhook: 'Webhook',
   facs: 'FACs',
   tickets: 'Tickets',
-  discord: 'Discord'
+  discord: 'Discord',
+  vendas: 'Vendas'
 };
 
 function formatUptime(seconds) {
@@ -110,6 +111,7 @@ export default function Bots() {
           <option value="facs">FACs</option>
           <option value="tickets">Tickets</option>
           <option value="discord">Discord</option>
+          <option value="vendas">Vendas</option>
         </select>
         <select className="form-select" style={{ width: 'auto', minWidth: 140 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="">Todos status</option>
