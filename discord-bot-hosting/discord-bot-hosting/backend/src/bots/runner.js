@@ -26,7 +26,8 @@ const botModules = {
   webhook: './types/WebhookBot',
   facs: './types/FacsBot',
   tickets: './types/TicketsBot',
-  discord: './types/DiscordBot'
+  discord: './types/DiscordBot',
+  vendas: './types/VendasBot'
 };
 
 const modulePath = botModules[BOT_TYPE];
