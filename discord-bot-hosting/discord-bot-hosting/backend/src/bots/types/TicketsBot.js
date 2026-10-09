@@ -97,16 +97,30 @@ class TicketsBot {
   // Select menu sempre "limpo" (sem valor selecionado)
   buildTicketSelectRow() {
     const categories = this.config.categories || [{ name: 'Suporte', id: 'support' }];
-    const options = categories.slice(0, 25).map((c, i) => ({
-      label: c.name.slice(0, 100),
-      value: c.id || `cat_${i}`,
-      description: `Abrir ticket: ${c.name}`.slice(0, 100)
-    }));
+    const options = categories.slice(0, 25).map((c, i) => {
+      const opt = {
+        label: c.name.slice(0, 100),
+        value: c.id || `cat_${i}`,
+        description: `Abrir ticket: ${c.name}`.slice(0, 100)
+      };
+      // emoji unicode ou custom do Discord
+      if (c.emoji) {
+        const custom = c.emoji.match(/^<?a?:([a-zA-Z0-9_]+):(\d+)>?$/);
+        if (custom) {
+          opt.emoji = { name: custom[1], id: custom[2] };
+        } else {
+          opt.emoji = c.emoji;
+        }
+      } else {
+        opt.emoji = '📩';
+      }
+      return opt;
+    });
 
     return new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('ticket_select_category')
-        .setPlaceholder('Selecione a categoria...')
+        .setPlaceholder('📩 Selecione a categoria de atendimento.')
         .setMinValues(1)
         .setMaxValues(1)
         .addOptions(options)
@@ -114,15 +128,14 @@ class TicketsBot {
   }
 
   buildTicketPanelEmbed() {
-    const cats = (this.config.categories || []).map(c => `• ${c.name}`).join('\n') || '• Suporte';
     const embed = new EmbedBuilder()
       .setTitle(this.config.title || '🎫 Central de Tickets')
-      .setDescription(
-        (this.config.message || 'Selecione uma categoria abaixo para abrir um ticket com a nossa equipe.') +
-        `\n\n**Categorias disponíveis**\n${cats}`
-      )
+      .setDescription(this.config.message || 'Selecione uma categoria abaixo para abrir um ticket com a nossa equipe.')
       .setColor(this.color())
-      .setFooter({ text: this.config.footer || 'Sistema de Tickets • Resposta o mais rápido possível' });
+      .setFooter({ text: this.config.footer || 'Sistema de Tickets' });
+    // Canto superior direito (imagem ou GIF)
+    if (this.config.thumbnail) embed.setThumbnail(this.config.thumbnail);
+    // Imagem grande embaixo
     if (this.config.banner) embed.setImage(this.config.banner);
     return embed;
   }
@@ -138,7 +151,7 @@ class TicketsBot {
   }
 
   buildConfigPanel() {
-    const cats = (this.config.categories || []).map(c => c.name).join(', ') || 'Nenhuma';
+    const cats = (this.config.categories || []).map(c => `${c.emoji || '📩'} ${c.name}`).join(', ') || 'Nenhuma';
 
     const embed = new EmbedBuilder()
       .setTitle('⚙️ Painel de Configuração — Tickets')
@@ -150,6 +163,7 @@ class TicketsBot {
         { name: '📌 Footer', value: this.config.footer || 'Sistema de Tickets', inline: true },
         { name: '🎨 Cor Sidebar', value: this.color(), inline: true },
         { name: '🖼️ Banner', value: this.config.banner ? 'Configurado' : 'Não definido', inline: true },
+        { name: '📌 Thumbnail', value: this.config.thumbnail ? 'Configurado' : 'Não definido', inline: true },
         { name: '📂 Categorias', value: cats, inline: true },
         { name: '📁 Categoria Discord', value: this.config.ticketCategoryId ? `<#${this.config.ticketCategoryId}>` : 'Não definida', inline: true },
         { name: '📜 Canal de Logs', value: this.config.logChannelId ? `<#${this.config.logChannelId}>` : 'Não definido', inline: true },
@@ -163,25 +177,30 @@ class TicketsBot {
       new ButtonBuilder().setCustomId('tcfg_title').setLabel('Título').setStyle(ButtonStyle.Primary).setEmoji('📋'),
       new ButtonBuilder().setCustomId('tcfg_message').setLabel('Mensagem').setStyle(ButtonStyle.Primary).setEmoji('📝'),
       new ButtonBuilder().setCustomId('tcfg_footer').setLabel('Footer').setStyle(ButtonStyle.Primary).setEmoji('📌'),
-      new ButtonBuilder().setCustomId('tcfg_color').setLabel('Cor').setStyle(ButtonStyle.Secondary).setEmoji('🎨'),
-      new ButtonBuilder().setCustomId('tcfg_banner').setLabel('Banner').setStyle(ButtonStyle.Secondary).setEmoji('🖼️')
+      new ButtonBuilder().setCustomId('tcfg_color').setLabel('Cor').setStyle(ButtonStyle.Secondary).setEmoji('🎨')
+    );
+
+    const rowImg = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('tcfg_banner').setLabel('Banner (baixo)').setStyle(ButtonStyle.Secondary).setEmoji('🖼️'),
+      new ButtonBuilder().setCustomId('tcfg_thumbnail').setLabel('Thumbnail (canto)').setStyle(ButtonStyle.Secondary).setEmoji('📌')
     );
 
     const row2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('tcfg_addcat').setLabel('Add Categoria').setStyle(ButtonStyle.Success).setEmoji('➕'),
+      new ButtonBuilder().setCustomId('tcfg_editemoji').setLabel('Emoji Categoria').setStyle(ButtonStyle.Primary).setEmoji('😀'),
       new ButtonBuilder().setCustomId('tcfg_remcat').setLabel('Rem Categoria').setStyle(ButtonStyle.Danger).setEmoji('➖'),
       new ButtonBuilder().setCustomId('tcfg_category').setLabel('Cat. Discord').setStyle(ButtonStyle.Secondary).setEmoji('📁'),
-      new ButtonBuilder().setCustomId('tcfg_logs').setLabel('Canal Logs').setStyle(ButtonStyle.Secondary).setEmoji('📜'),
-      new ButtonBuilder().setCustomId('tcfg_staff').setLabel('Cargo Equipe').setStyle(ButtonStyle.Secondary).setEmoji('👮')
+      new ButtonBuilder().setCustomId('tcfg_logs').setLabel('Canal Logs').setStyle(ButtonStyle.Secondary).setEmoji('📜')
     );
 
     const row3 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('tcfg_staff').setLabel('Cargo Equipe').setStyle(ButtonStyle.Secondary).setEmoji('👮'),
       new ButtonBuilder().setCustomId('tcfg_admin').setLabel('Cargo Admin').setStyle(ButtonStyle.Secondary).setEmoji('🔐'),
       new ButtonBuilder().setCustomId('tcfg_preview').setLabel('Preview Painel').setStyle(ButtonStyle.Primary).setEmoji('👁️'),
       new ButtonBuilder().setCustomId('tcfg_refresh').setLabel('Atualizar').setStyle(ButtonStyle.Secondary).setEmoji('🔄')
     );
 
-    return { embeds: [embed], components: [row1, row2, row3], ephemeral: true };
+    return { embeds: [embed], components: [row1, rowImg, row2, row3], ephemeral: true };
   }
 
   async handleMessage(message) {
@@ -270,12 +289,69 @@ class TicketsBot {
         });
       }
 
+      // Add categoria com nome + emoji
+      if (id === 'tcfg_addcat') {
+        const modal = new ModalBuilder()
+          .setCustomId('tmodal_tcfg_addcat')
+          .setTitle('Adicionar Categoria');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('cat_name')
+              .setLabel('Nome da categoria')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(80)
+              .setPlaceholder('Ex: Dúvidas')
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('cat_emoji')
+              .setLabel('Emoji (unicode ou :nome:id)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(80)
+              .setPlaceholder('📩 ou <:nome:123456789>')
+              .setValue('📩')
+          )
+        );
+        return interaction.showModal(modal);
+      }
+
+      // Editar emoji de categoria existente
+      if (id === 'tcfg_editemoji') {
+        const modal = new ModalBuilder()
+          .setCustomId('tmodal_tcfg_editemoji')
+          .setTitle('Emoji da Categoria');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('cat_name')
+              .setLabel('Nome exato da categoria')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(80)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('cat_emoji')
+              .setLabel('Novo emoji')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(80)
+              .setPlaceholder('📩 ou <:nome:123456789>')
+          )
+        );
+        return interaction.showModal(modal);
+      }
+
       const modals = {
         tcfg_title: { title: 'Título do Embed', label: 'Título', style: TextInputStyle.Short, current: this.config.title },
         tcfg_message: { title: 'Mensagem do Embed', label: 'Mensagem', style: TextInputStyle.Paragraph, current: this.config.message },
         tcfg_footer: { title: 'Footer do Embed', label: 'Footer', style: TextInputStyle.Short, current: this.config.footer },
         tcfg_color: { title: 'Cor da Sidebar', label: 'Cor Hex (ex: #5865F2)', style: TextInputStyle.Short, current: this.color() },
-        tcfg_banner: { title: 'Banner (URL da imagem)', label: 'URL da imagem', style: TextInputStyle.Short, current: this.config.banner || '' },
+        tcfg_banner: { title: 'Banner (URL da imagem)', label: 'URL da imagem grande (embaixo)', style: TextInputStyle.Short, current: this.config.banner || '' },
+        tcfg_thumbnail: { title: 'Thumbnail (canto superior direito)', label: 'URL da imagem ou GIF', style: TextInputStyle.Short, current: this.config.thumbnail || '' },
         tcfg_addcat: { title: 'Adicionar Categoria', label: 'Nome da categoria', style: TextInputStyle.Short, current: '' },
         tcfg_remcat: { title: 'Remover Categoria', label: 'Nome exato da categoria', style: TextInputStyle.Short, current: '' },
         tcfg_category: { title: 'Categoria do Discord', label: 'ID da categoria onde tickets são criados', style: TextInputStyle.Short, current: this.config.ticketCategoryId || '' },
@@ -306,6 +382,46 @@ class TicketsBot {
       }
 
       const key = interaction.customId.replace('tmodal_', '');
+
+      // Add categoria (nome + emoji)
+      if (key === 'tcfg_addcat') {
+        const name = interaction.fields.getTextInputValue('cat_name').trim();
+        let emoji = '';
+        try { emoji = interaction.fields.getTextInputValue('cat_emoji').trim(); } catch (_) {}
+        if (!this.config.categories) this.config.categories = [];
+        const catId = name.toLowerCase().replace(/\s+/g, '_').slice(0, 50);
+        if (this.config.categories.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+          return interaction.reply({ content: '❌ Essa categoria já existe.', ephemeral: true });
+        }
+        this.config.categories.push({ name, id: catId, emoji: emoji || '📩' });
+        this.log('info', `Categoria adicionada: ${name} (${emoji || '📩'})`);
+        try {
+          await interaction.update(this.buildConfigPanel());
+        } catch {
+          await interaction.reply({ content: `✅ Categoria **${name}** adicionada com emoji ${emoji || '📩'}`, ephemeral: true });
+        }
+        return;
+      }
+
+      // Editar emoji
+      if (key === 'tcfg_editemoji') {
+        const name = interaction.fields.getTextInputValue('cat_name').trim();
+        const emoji = interaction.fields.getTextInputValue('cat_emoji').trim();
+        if (!this.config.categories) this.config.categories = [];
+        const cat = this.config.categories.find(c => c.name.toLowerCase() === name.toLowerCase());
+        if (!cat) {
+          return interaction.reply({ content: '❌ Categoria não encontrada.', ephemeral: true });
+        }
+        cat.emoji = emoji;
+        this.log('info', `Emoji da categoria ${name} → ${emoji}`);
+        try {
+          await interaction.update(this.buildConfigPanel());
+        } catch {
+          await interaction.reply({ content: `✅ Emoji de **${name}** atualizado para ${emoji}`, ephemeral: true });
+        }
+        return;
+      }
+
       const value = interaction.fields.getTextInputValue('value').trim();
 
       switch (key) {
@@ -316,13 +432,9 @@ class TicketsBot {
           this.config.sidebarColor = value.startsWith('#') ? value : `#${value}`;
           break;
         case 'tcfg_banner': this.config.banner = value || null; break;
+        case 'tcfg_thumbnail': this.config.thumbnail = value || null; break;
         case 'tcfg_addcat': {
-          if (!this.config.categories) this.config.categories = [];
-          const catId = value.toLowerCase().replace(/\s+/g, '_').slice(0, 50);
-          if (this.config.categories.some(c => c.name.toLowerCase() === value.toLowerCase())) {
-            return interaction.reply({ content: '❌ Essa categoria já existe.', ephemeral: true });
-          }
-          this.config.categories.push({ name: value, id: catId });
+          // fallback (não deve chegar aqui)
           break;
         }
         case 'tcfg_remcat': {
