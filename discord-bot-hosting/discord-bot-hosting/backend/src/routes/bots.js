@@ -8,7 +8,8 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 const MAX_BOTS = parseInt(process.env.MAX_BOTS_PER_CATEGORY) || 50;
-const VALID_TYPES = ['webhook', 'facs', 'tickets', 'discord'];
+const VALID_TYPES = ['webhook', 'facs', 'tickets', 'discord', 'vendas'];
+const LIMITS = { webhook: 50, facs: 50, tickets: 50, discord: 50, vendas: 3 };
 
 router.use(authenticate);
 
@@ -65,7 +66,8 @@ router.get('/counts', (req, res) => {
     for (const type of VALID_TYPES) {
       const row = db.prepare('SELECT COUNT(*) as count FROM bots WHERE user_id = ? AND type = ?')
         .get(req.user.id, type);
-      counts[type] = { current: row.count, max: MAX_BOTS };
+      const max = LIMITS[type] || MAX_BOTS;
+      counts[type] = { current: row.count, max };
     }
     res.json({ counts });
   } catch (err) {
@@ -125,9 +127,10 @@ router.post('/', async (req, res) => {
     const count = db.prepare('SELECT COUNT(*) as c FROM bots WHERE user_id = ? AND type = ?')
       .get(req.user.id, type);
     
-    if (count.c >= MAX_BOTS) {
+    const typeLimit = LIMITS[type] || MAX_BOTS;
+    if (count.c >= typeLimit) {
       return res.status(403).json({
-        error: `Limite de ${MAX_BOTS} bots do tipo "${type}" atingido`
+        error: `Limite de ${typeLimit} bots do tipo "${type}" atingido`
       });
     }
 
@@ -381,6 +384,19 @@ function getDefaultConfig(type) {
       banner: null,
       sidebarColor: '#5865F2',
       categories: [{ name: 'Suporte', id: 'support' }],
+      ticketCategoryId: null,
+      logChannelId: null,
+      staffRoleId: null,
+      authorizedRoleId: null
+    },
+    vendas: {
+      title: 'Central de Vendas',
+      message: 'Selecione uma categoria para abrir uma venda.',
+      footer: 'Sistema de Vendas',
+      banner: null,
+      thumbnail: null,
+      sidebarColor: '#3ba55d',
+      categories: [{ name: 'Produto', id: 'produto', emoji: '🛒' }],
       ticketCategoryId: null,
       logChannelId: null,
       staffRoleId: null,
