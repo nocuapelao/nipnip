@@ -41,7 +41,7 @@ function initDatabase() {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('webhook', 'facs', 'tickets', 'discord')),
+      type TEXT NOT NULL CHECK(type IN ('webhook', 'facs', 'tickets', 'discord', 'vendas')),
       token_encrypted TEXT NOT NULL,
       status TEXT DEFAULT 'offline' CHECK(status IN ('online', 'offline', 'restarting', 'error')),
       guild_id TEXT,
@@ -87,6 +87,42 @@ function initDatabase() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bots_type ON bots(type)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bot_logs_bot ON bot_logs(bot_id)`);
+
+  // Garante suporte ao tipo vendas
+  try {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='bots'").get();
+    if (row && row.sql && !row.sql.includes('vendas')) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS bots_new (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('webhook', 'facs', 'tickets', 'discord', 'vendas')),
+          token_encrypted TEXT NOT NULL,
+          status TEXT DEFAULT 'offline' CHECK(status IN ('online', 'offline', 'restarting', 'error')),
+          guild_id TEXT,
+          guild_name TEXT,
+          config TEXT DEFAULT '{}',
+          uptime_start TEXT,
+          last_restart TEXT,
+          last_error TEXT,
+          restart_count INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        INSERT OR IGNORE INTO bots_new SELECT * FROM bots;
+        DROP TABLE bots;
+        ALTER TABLE bots_new RENAME TO bots;
+        CREATE INDEX IF NOT EXISTS idx_bots_user ON bots(user_id);
+        CREATE INDEX IF NOT EXISTS idx_bots_type ON bots(type);
+        CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
+      `);
+      logger.info('Migrated bots table to support vendas type');
+    }
+  } catch (e) {
+    logger.warn('Migration vendas skipped: ' + e.message);
+  }
 
   logger.info('Database initialized successfully');
   return db;
