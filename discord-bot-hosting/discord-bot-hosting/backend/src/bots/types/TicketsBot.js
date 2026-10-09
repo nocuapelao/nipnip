@@ -34,10 +34,27 @@ class TicketsBot {
       ]
     });
 
-    this.client.once('ready', () => {
+    this.client.once('ready', async () => {
       const guild = this.client.guilds.cache.first();
       this.guildId = guild?.id || null;
       this.guildName = guild?.name || null;
+
+      try {
+        const { REST, Routes, SlashCommandBuilder } = require('discord.js');
+        const rest = new REST({ version: '10' }).setToken(this.token);
+        await rest.put(Routes.applicationCommands(this.client.user.id), {
+          body: [
+            new SlashCommandBuilder()
+              .setName('configticket')
+              .setDescription('Abrir painel privado de configuração dos tickets')
+              .toJSON()
+          ]
+        });
+        this.log('info', 'Slash /configticket registrado');
+      } catch (e) {
+        this.log('error', `Falha ao registrar slash: ${e.message}`);
+      }
+
       this.send({ type: 'ready', guildId: this.guildId, guildName: this.guildName });
       this.log('info', `TicketsBot online as ${this.client.user.tag}`);
     });
@@ -186,25 +203,33 @@ class TicketsBot {
 
       try { await message.delete(); } catch (_) {}
 
-      const intro = new EmbedBuilder()
-        .setTitle('⚙️ Configuração de Tickets')
-        .setDescription(`${message.author}, clique no botão abaixo para abrir o **painel privado** de configuração.\n\nApenas você conseguirá ver o painel.`)
-        .setColor(this.color());
-
+      // Mensagem curta com botão — ao clicar abre painel EFÊMERO ("Só pode ver esta mensagem")
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`tcfg_open_${message.author.id}`)
-          .setLabel('Abrir Painel de Configuração')
+          .setLabel('Abrir painel (só você vê)')
           .setStyle(ButtonStyle.Primary)
           .setEmoji('⚙️')
       );
 
-      const sent = await message.channel.send({ embeds: [intro], components: [row] });
-      setTimeout(() => sent.delete().catch(() => {}), 60000);
+      const sent = await message.channel.send({
+        content: `${message.author} clique para abrir a configuração:`,
+        components: [row]
+      });
+      // some em 30s se ninguém clicar
+      setTimeout(() => sent.delete().catch(() => {}), 30000);
     }
   }
 
   async handleInteraction(interaction) {
+    // ── Slash /configticket → painel 100% privado ──
+    if (interaction.isChatInputCommand() && interaction.commandName === 'configticket') {
+      if (!this.hasPermission(interaction.member)) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      return interaction.reply(this.buildConfigPanel());
+    }
+
     // ── Abrir painel config ──
     if (interaction.isButton() && interaction.customId.startsWith('tcfg_open_')) {
       const ownerId = interaction.customId.replace('tcfg_open_', '');
@@ -214,7 +239,10 @@ class TicketsBot {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
-      return interaction.reply(this.buildConfigPanel());
+      // Painel com "Só pode ver esta mensagem"
+      await interaction.reply(this.buildConfigPanel());
+      try { await interaction.message.delete(); } catch (_) {}
+      return;
     }
 
     // ── Botões do painel config ──
