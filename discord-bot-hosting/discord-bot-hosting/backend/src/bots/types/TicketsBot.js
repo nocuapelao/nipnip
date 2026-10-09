@@ -20,7 +20,8 @@ class TicketsBot {
     this.client = null;
     this.guildId = null;
     this.guildName = null;
-    this.tickets = new Map();
+    this.tickets = new Map(); // channelId -> data
+    this.userTickets = new Map(); // userId -> channelId (impede ticket duplicado)
   }
 
   async start() {
@@ -76,6 +77,45 @@ class TicketsBot {
     return this.hasPermission(member);
   }
 
+  // Select menu sempre "limpo" (sem valor selecionado)
+  buildTicketSelectRow() {
+    const categories = this.config.categories || [{ name: 'Suporte', id: 'support' }];
+    const options = categories.slice(0, 25).map((c, i) => ({
+      label: c.name.slice(0, 100),
+      value: c.id || `cat_${i}`,
+      description: `Abrir ticket: ${c.name}`.slice(0, 100)
+    }));
+
+    return new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('ticket_select_category')
+        .setPlaceholder('Selecione a categoria...')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(options)
+    );
+  }
+
+  buildTicketPanelEmbed() {
+    const embed = new EmbedBuilder()
+      .setTitle(this.config.title || 'Central de Tickets')
+      .setDescription(this.config.message || 'Selecione uma categoria para abrir um ticket.')
+      .setColor(this.color())
+      .setFooter({ text: this.config.footer || 'Sistema de Tickets' });
+    if (this.config.banner) embed.setImage(this.config.banner);
+    return embed;
+  }
+
+  // Reseta o select da mensagem original (resolve o bug de categoria travada)
+  async resetSelectMenu(message) {
+    try {
+      await message.edit({
+        embeds: [this.buildTicketPanelEmbed()],
+        components: [this.buildTicketSelectRow()]
+      });
+    } catch (_) {}
+  }
+
   buildConfigPanel() {
     const cats = (this.config.categories || []).map(c => c.name).join(', ') || 'Nenhuma';
 
@@ -129,33 +169,14 @@ class TicketsBot {
 
     if (content === '!ticket') {
       const categories = this.config.categories || [{ name: 'Suporte', id: 'support' }];
-
-      const embed = new EmbedBuilder()
-        .setTitle(this.config.title || 'Central de Tickets')
-        .setDescription(this.config.message || 'Selecione uma categoria para abrir um ticket.')
-        .setColor(this.color())
-        .setFooter({ text: this.config.footer || 'Sistema de Tickets' });
-
-      if (this.config.banner) embed.setImage(this.config.banner);
-
-      const options = categories.slice(0, 25).map((c, i) => ({
-        label: c.name.slice(0, 100),
-        value: c.id || `cat_${i}`,
-        description: `Abrir ticket: ${c.name}`.slice(0, 100)
-      }));
-
-      if (options.length === 0) {
+      if (categories.length === 0) {
         return message.reply('❌ Nenhuma categoria configurada. Use `!configticket` para adicionar.');
       }
 
-      const row = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('ticket_select_category')
-          .setPlaceholder('Selecione a categoria...')
-          .addOptions(options)
-      );
-
-      await message.channel.send({ embeds: [embed], components: [row] });
+      await message.channel.send({
+        embeds: [this.buildTicketPanelEmbed()],
+        components: [this.buildTicketSelectRow()]
+      });
     }
 
     if (content === '!configticket' || content.startsWith('!configbot')) {
@@ -184,6 +205,7 @@ class TicketsBot {
   }
 
   async handleInteraction(interaction) {
+    // ── Abrir painel config ──
     if (interaction.isButton() && interaction.customId.startsWith('tcfg_open_')) {
       const ownerId = interaction.customId.replace('tcfg_open_', '');
       if (interaction.user.id !== ownerId) {
@@ -195,6 +217,7 @@ class TicketsBot {
       return interaction.reply(this.buildConfigPanel());
     }
 
+    // ── Botões do painel config ──
     if (interaction.isButton() && interaction.customId.startsWith('tcfg_')) {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
@@ -207,13 +230,7 @@ class TicketsBot {
       }
 
       if (id === 'tcfg_preview') {
-        const embed = new EmbedBuilder()
-          .setTitle(this.config.title || 'Central de Tickets')
-          .setDescription(this.config.message || 'Selecione uma categoria...')
-          .setColor(this.color())
-          .setFooter({ text: this.config.footer || 'Sistema de Tickets' });
-        if (this.config.banner) embed.setImage(this.config.banner);
-
+        const embed = this.buildTicketPanelEmbed();
         return interaction.reply({
           content: '👁️ **Preview** do painel público de tickets:',
           embeds: [embed],
@@ -238,23 +255,19 @@ class TicketsBot {
       const m = modals[id];
       if (!m) return;
 
-      const modal = new ModalBuilder()
-        .setCustomId(`tmodal_${id}`)
-        .setTitle(m.title);
-
+      const modal = new ModalBuilder().setCustomId(`tmodal_${id}`).setTitle(m.title);
       const input = new TextInputBuilder()
         .setCustomId('value')
         .setLabel(m.label)
         .setStyle(m.style)
         .setRequired(true)
         .setMaxLength(m.style === TextInputStyle.Paragraph ? 1000 : 200);
-
       if (m.current) input.setValue(String(m.current).slice(0, 200));
-
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       return interaction.showModal(modal);
     }
 
+    // ── Submit config ──
     if (interaction.isModalSubmit() && interaction.customId.startsWith('tmodal_')) {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
@@ -264,21 +277,13 @@ class TicketsBot {
       const value = interaction.fields.getTextInputValue('value').trim();
 
       switch (key) {
-        case 'tcfg_title':
-          this.config.title = value;
-          break;
-        case 'tcfg_message':
-          this.config.message = value;
-          break;
-        case 'tcfg_footer':
-          this.config.footer = value;
-          break;
+        case 'tcfg_title': this.config.title = value; break;
+        case 'tcfg_message': this.config.message = value; break;
+        case 'tcfg_footer': this.config.footer = value; break;
         case 'tcfg_color':
           this.config.sidebarColor = value.startsWith('#') ? value : `#${value}`;
           break;
-        case 'tcfg_banner':
-          this.config.banner = value || null;
-          break;
+        case 'tcfg_banner': this.config.banner = value || null; break;
         case 'tcfg_addcat': {
           if (!this.config.categories) this.config.categories = [];
           const catId = value.toLowerCase().replace(/\s+/g, '_').slice(0, 50);
@@ -328,14 +333,35 @@ class TicketsBot {
       }
     }
 
+    // ── Select categoria (CORREÇÃO DO BUG) ──
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select_category') {
       const categoryId = interaction.values[0];
       const category = (this.config.categories || []).find(c => (c.id || c.name) === categoryId) ||
-                       { name: categoryId };
+                       { name: categoryId, id: categoryId };
+
+      // Impede abrir 2 tickets ao mesmo tempo
+      const existingId = this.userTickets.get(interaction.user.id);
+      if (existingId) {
+        const existing = interaction.guild.channels.cache.get(existingId);
+        if (existing) {
+          // Reseta o select imediatamente
+          await this.resetSelectMenu(interaction.message);
+          return interaction.reply({
+            content: `❌ Você já possui um ticket aberto: ${existing}\nFeche-o antes de abrir outro.`,
+            ephemeral: true
+          });
+        } else {
+          this.userTickets.delete(interaction.user.id);
+        }
+      }
+
+      // IMPORTANTE: resetar o select ANTES do modal
+      // Assim a categoria não fica "travada" na interface
+      await this.resetSelectMenu(interaction.message);
 
       const modal = new ModalBuilder()
         .setCustomId(`ticket_reason_${categoryId}`)
-        .setTitle(`Ticket: ${category.name}`.slice(0, 45));
+        .setTitle(`Ticket: ${String(category.name).slice(0, 40)}`);
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(
@@ -344,19 +370,34 @@ class TicketsBot {
             .setLabel('Por que você abriu este ticket?')
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
-            .setMinLength(10)
+            .setMinLength(5)
             .setMaxLength(1000)
+            .setPlaceholder('Descreva o motivo com o máximo de detalhes...')
         )
       );
 
       return interaction.showModal(modal);
     }
 
+    // ── Criar ticket ──
     if (interaction.isModalSubmit() && interaction.customId.startsWith('ticket_reason_')) {
       const categoryId = interaction.customId.replace('ticket_reason_', '');
       const reason = interaction.fields.getTextInputValue('reason');
       const category = (this.config.categories || []).find(c => (c.id || c.name) === categoryId) ||
                        { name: categoryId };
+
+      // Checagem extra de ticket duplicado
+      const existingId = this.userTickets.get(interaction.user.id);
+      if (existingId) {
+        const existing = interaction.guild.channels.cache.get(existingId);
+        if (existing) {
+          return interaction.reply({
+            content: `❌ Você já possui um ticket aberto: ${existing}`,
+            ephemeral: true
+          });
+        }
+        this.userTickets.delete(interaction.user.id);
+      }
 
       if (!this.config.ticketCategoryId) {
         return interaction.reply({
@@ -366,20 +407,39 @@ class TicketsBot {
       }
 
       try {
-        const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15);
+        await interaction.deferReply({ ephemeral: true });
+
+        const safeName = interaction.user.username
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .slice(0, 12) || 'user';
+
         const channel = await interaction.guild.channels.create({
-          name: `ticket-${safeName}`,
+          name: `🎫｜${safeName}-${String(category.name).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10)}`,
           type: ChannelType.GuildText,
           parent: this.config.ticketCategoryId,
+          topic: `Ticket de ${interaction.user.tag} | Categoria: ${category.name} | ID: ${interaction.user.id}`,
           permissionOverwrites: [
             { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
             {
               id: interaction.user.id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.ReadMessageHistory,
+                PermissionFlagsBits.AttachFiles,
+                PermissionFlagsBits.EmbedLinks
+              ]
             },
             ...(this.config.staffRoleId ? [{
               id: this.config.staffRoleId,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.ReadMessageHistory,
+                PermissionFlagsBits.ManageMessages,
+                PermissionFlagsBits.AttachFiles
+              ]
             }] : [])
           ]
         });
@@ -388,27 +448,32 @@ class TicketsBot {
           userId: interaction.user.id,
           assignee: null,
           subject: reason,
-          category: category.name
+          category: category.name,
+          createdAt: Date.now()
         });
+        this.userTickets.set(interaction.user.id, channel.id);
 
         const ticketEmbed = new EmbedBuilder()
-          .setTitle('🎫 TICKET ABERTO POR')
+          .setTitle('🎫 Ticket Aberto')
           .setDescription(
-            `${interaction.user}\n\n` +
-            `"Seja bem-vindo ao ticket do nosso servidor. Aguarde que nossa equipe já está ciente do seu ticket e irá te responder em breve!"\n\n` +
-            `**Responsável do ticket**\n_Nenhum_\n\n` +
-            `**Assunto do ticket**\n${reason}`
+            `**Aberto por:** ${interaction.user}\n` +
+            `**Categoria:** ${category.name}\n\n` +
+            `Olá! Seja bem-vindo ao sistema de tickets.\n` +
+            `Nossa equipe já foi notificada e responderá em breve.\n\n` +
+            `**Assunto**\n>>> ${reason}\n\n` +
+            `**Responsável**\n_Aguardando alguém da equipe assumir_`
           )
           .setColor(this.color())
+          .setThumbnail(interaction.user.displayAvatarURL({ size: 128 }))
           .setFooter({ text: this.config.footer || 'Sistema de Tickets' })
           .setTimestamp();
 
         const buttons = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar Ticket').setStyle(ButtonStyle.Danger).setEmoji('🟥'),
-          new ButtonBuilder().setCustomId('ticket_claim').setLabel('Assumir Ticket').setStyle(ButtonStyle.Success).setEmoji('🟩'),
-          new ButtonBuilder().setCustomId('ticket_add').setLabel('Adicionar Membro').setStyle(ButtonStyle.Primary).setEmoji('🟦'),
-          new ButtonBuilder().setCustomId('ticket_remove').setLabel('Remover Membro').setStyle(ButtonStyle.Secondary).setEmoji('🟨'),
-          new ButtonBuilder().setCustomId('ticket_notify').setLabel('Avisar Membro').setStyle(ButtonStyle.Secondary).setEmoji('🟪')
+          new ButtonBuilder().setCustomId('ticket_claim').setLabel('Assumir').setStyle(ButtonStyle.Success).setEmoji('✅'),
+          new ButtonBuilder().setCustomId('ticket_notify').setLabel('Avisar').setStyle(ButtonStyle.Primary).setEmoji('🔔'),
+          new ButtonBuilder().setCustomId('ticket_add').setLabel('Add Membro').setStyle(ButtonStyle.Secondary).setEmoji('➕'),
+          new ButtonBuilder().setCustomId('ticket_remove').setLabel('Rem Membro').setStyle(ButtonStyle.Secondary).setEmoji('➖'),
+          new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar').setStyle(ButtonStyle.Danger).setEmoji('🔒')
         );
 
         await channel.send({
@@ -417,112 +482,184 @@ class TicketsBot {
           components: [buttons]
         });
 
-        await interaction.reply({ content: `✅ Ticket criado: ${channel}`, ephemeral: true });
+        await interaction.editReply({
+          content: `✅ Seu ticket foi criado: ${channel}`
+        });
+
         this.log('info', `Ticket opened by ${interaction.user.tag}: ${category.name}`);
-        this._sendLog(interaction.guild, `🎫 Ticket aberto por ${interaction.user} — ${category.name}`);
+        this._sendLog(
+          interaction.guild,
+          `🎫 **Ticket aberto**\nUsuário: ${interaction.user}\nCategoria: **${category.name}**\nCanal: ${channel}`
+        );
       } catch (err) {
-        await interaction.reply({ content: `❌ Erro: ${err.message}`, ephemeral: true });
+        const msg = { content: `❌ Erro ao criar ticket: ${err.message}` };
+        if (interaction.deferred) {
+          await interaction.editReply(msg).catch(() => {});
+        } else {
+          await interaction.reply({ ...msg, ephemeral: true }).catch(() => {});
+        }
       }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith('ticket_')) {
+    // ── Botões do ticket ──
+    if (interaction.isButton() && ['ticket_close', 'ticket_claim', 'ticket_add', 'ticket_remove', 'ticket_notify'].includes(interaction.customId)) {
       const ticketData = this.tickets.get(interaction.channel.id);
 
+      // Fechar
       if (interaction.customId === 'ticket_close') {
         if (!this.isStaff(interaction.member) && ticketData?.userId !== interaction.user.id) {
-          return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+          return interaction.reply({ content: '❌ Sem permissão para fechar este ticket.', ephemeral: true });
         }
-        await interaction.reply('🔒 Ticket será fechado em 5 segundos...');
-        this._sendLog(interaction.guild, `🔒 Ticket fechado por ${interaction.user} — #${interaction.channel.name}`);
-        this.tickets.delete(interaction.channel.id);
-        setTimeout(async () => {
-          try { await interaction.channel.delete(); } catch (e) {}
-        }, 5000);
+
+        const confirmRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('ticket_close_confirm').setLabel('Confirmar fechamento').setStyle(ButtonStyle.Danger).setEmoji('🔒'),
+          new ButtonBuilder().setCustomId('ticket_close_cancel').setLabel('Cancelar').setStyle(ButtonStyle.Secondary)
+        );
+
+        return interaction.reply({
+          content: '⚠️ Tem certeza que deseja **fechar** este ticket? O canal será excluído.',
+          components: [confirmRow],
+          ephemeral: true
+        });
       }
 
+      // Assumir
       if (interaction.customId === 'ticket_claim') {
         if (!this.isStaff(interaction.member)) {
           return interaction.reply({ content: '❌ Apenas a equipe pode assumir tickets.', ephemeral: true });
         }
-        if (ticketData) ticketData.assignee = interaction.user.id;
 
-        const embed = EmbedBuilder.from(interaction.message.embeds[0]);
-        const desc = embed.data.description || '';
-        const newDesc = desc.replace(
-          /\*\*Responsável do ticket\*\*\n.+/m,
-          `**Responsável do ticket**\n${interaction.user}`
-        );
-        embed.setDescription(newDesc);
-        await interaction.update({ embeds: [embed] });
-        this._sendLog(interaction.guild, `🟩 Ticket assumido por ${interaction.user}`);
+        if (ticketData) {
+          if (ticketData.assignee && ticketData.assignee !== interaction.user.id) {
+            return interaction.reply({
+              content: `⚠️ Este ticket já foi assumido por <@${ticketData.assignee}>.`,
+              ephemeral: true
+            });
+          }
+          ticketData.assignee = interaction.user.id;
+        }
+
+        try {
+          const embed = EmbedBuilder.from(interaction.message.embeds[0]);
+          const desc = embed.data.description || '';
+          const newDesc = desc.replace(
+            /\*\*Responsável\*\*\n.+/m,
+            `**Responsável**\n${interaction.user}`
+          );
+          embed.setDescription(newDesc);
+          embed.setColor('#3ba55d');
+          await interaction.update({ embeds: [embed] });
+        } catch {
+          await interaction.reply({ content: `✅ Ticket assumido por ${interaction.user}`, ephemeral: true });
+        }
+
+        this._sendLog(interaction.guild, `✅ Ticket **assumido** por ${interaction.user} — #${interaction.channel.name}`);
       }
 
+      // Add membro
       if (interaction.customId === 'ticket_add') {
         if (!this.isStaff(interaction.member)) {
           return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
         }
         const modal = new ModalBuilder().setCustomId('ticket_add_modal').setTitle('Adicionar Membro');
         modal.addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('user_id').setLabel('ID do Usuário').setStyle(TextInputStyle.Short).setRequired(true)
+          new TextInputBuilder()
+            .setCustomId('user_id')
+            .setLabel('ID do Usuário ou @menção')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setPlaceholder('123456789012345678')
         ));
         return interaction.showModal(modal);
       }
 
+      // Rem membro
       if (interaction.customId === 'ticket_remove') {
         if (!this.isStaff(interaction.member)) {
           return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
         }
         const modal = new ModalBuilder().setCustomId('ticket_remove_modal').setTitle('Remover Membro');
         modal.addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('user_id').setLabel('ID do Usuário').setStyle(TextInputStyle.Short).setRequired(true)
+          new TextInputBuilder()
+            .setCustomId('user_id')
+            .setLabel('ID do Usuário ou @menção')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
         ));
         return interaction.showModal(modal);
       }
 
+      // Avisar
       if (interaction.customId === 'ticket_notify') {
         if (!this.isStaff(interaction.member)) {
           return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
         }
-        if (ticketData?.userId) {
-          try {
-            const user = await this.client.users.fetch(ticketData.userId);
-            await user.send(
-              `📬 Seu ticket em **${interaction.guild.name}** recebeu uma resposta!\n` +
-              `Acesse: ${interaction.channel}`
-            );
-            await interaction.reply({ content: '✅ Membro avisado via DM.', ephemeral: true });
-            this._sendLog(interaction.guild, `🟪 Aviso enviado para <@${ticketData.userId}> por ${interaction.user}`);
-          } catch (e) {
-            await interaction.reply({ content: '❌ Não foi possível enviar DM.', ephemeral: true });
-          }
+        if (!ticketData?.userId) {
+          return interaction.reply({ content: '❌ Não foi possível identificar o dono do ticket.', ephemeral: true });
+        }
+        try {
+          const user = await this.client.users.fetch(ticketData.userId);
+          await user.send(
+            `🔔 **Atualização no seu ticket**\n\n` +
+            `Servidor: **${interaction.guild.name}**\n` +
+            `Canal: ${interaction.channel}\n` +
+            `A equipe respondeu no seu ticket. Clique no canal para ver.`
+          );
+          await interaction.reply({ content: `✅ Aviso enviado para <@${ticketData.userId}>.`, ephemeral: true });
+          this._sendLog(interaction.guild, `🔔 Aviso enviado para <@${ticketData.userId}> por ${interaction.user}`);
+        } catch {
+          await interaction.reply({ content: '❌ Não foi possível enviar DM (usuário com DMs fechadas).', ephemeral: true });
         }
       }
     }
 
-    if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'ticket_add_modal') {
-        const userId = interaction.fields.getTextInputValue('user_id').replace(/[<@!>]/g, '');
-        try {
-          await interaction.channel.permissionOverwrites.edit(userId, {
-            ViewChannel: true,
-            SendMessages: true,
-            ReadMessageHistory: true
-          });
-          await interaction.reply(`✅ <@${userId}> adicionado ao ticket.`);
-          this._sendLog(interaction.guild, `🟦 Membro <@${userId}> adicionado por ${interaction.user}`);
-        } catch (e) {
-          await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true });
-        }
+    // Confirmar / cancelar fechamento
+    if (interaction.isButton() && interaction.customId === 'ticket_close_confirm') {
+      const ticketData = this.tickets.get(interaction.channel.id);
+      if (!this.isStaff(interaction.member) && ticketData?.userId !== interaction.user.id) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
-      if (interaction.customId === 'ticket_remove_modal') {
-        const userId = interaction.fields.getTextInputValue('user_id').replace(/[<@!>]/g, '');
-        try {
-          await interaction.channel.permissionOverwrites.delete(userId);
-          await interaction.reply(`✅ <@${userId}> removido do ticket.`);
-          this._sendLog(interaction.guild, `🟨 Membro <@${userId}> removido por ${interaction.user}`);
-        } catch (e) {
-          await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true });
-        }
+
+      if (ticketData?.userId) this.userTickets.delete(ticketData.userId);
+      this.tickets.delete(interaction.channel.id);
+
+      await interaction.update({ content: '🔒 Ticket fechado. Canal será excluído em 5 segundos...', components: [] });
+      this._sendLog(interaction.guild, `🔒 Ticket **fechado** por ${interaction.user} — #${interaction.channel.name}`);
+
+      setTimeout(async () => {
+        try { await interaction.channel.delete('Ticket fechado'); } catch (_) {}
+      }, 5000);
+    }
+
+    if (interaction.isButton() && interaction.customId === 'ticket_close_cancel') {
+      return interaction.update({ content: '✅ Fechamento cancelado.', components: [] });
+    }
+
+    // Modais add/remove
+    if (interaction.isModalSubmit() && interaction.customId === 'ticket_add_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').replace(/[<@!>]/g, '');
+      try {
+        await interaction.channel.permissionOverwrites.edit(userId, {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true,
+          AttachFiles: true
+        });
+        await interaction.reply(`✅ <@${userId}> adicionado ao ticket.`);
+        this._sendLog(interaction.guild, `➕ Membro <@${userId}> adicionado por ${interaction.user}`);
+      } catch (e) {
+        await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true });
+      }
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'ticket_remove_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').replace(/[<@!>]/g, '');
+      try {
+        await interaction.channel.permissionOverwrites.delete(userId);
+        await interaction.reply(`✅ <@${userId}> removido do ticket.`);
+        this._sendLog(interaction.guild, `➖ Membro <@${userId}> removido por ${interaction.user}`);
+      } catch (e) {
+        await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true });
       }
     }
   }
