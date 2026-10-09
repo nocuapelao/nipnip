@@ -588,7 +588,7 @@ class TicketsBot {
       try {
         await interaction.deferReply({ ephemeral: true });
 
-        // Nome do canal = só o nome da pessoa no Discord
+        // Nome do canal: (emoji da categoria)・(nome do Discord)
         const displayName = (interaction.member?.displayName || interaction.user.globalName || interaction.user.username || 'user');
         const safeName = displayName
           .toLowerCase()
@@ -597,8 +597,19 @@ class TicketsBot {
           .replace(/[^a-z0-9]/g, '')
           .slice(0, 20) || 'user';
 
+        let catEmoji = '📩';
+        const rawEmoji = (category.emoji || '📩').trim();
+        const customMatch = rawEmoji.match(/^<?(a?):([a-zA-Z0-9_]+):(\d+)>?$/);
+        if (!customMatch) {
+          const uni = rawEmoji.match(/\p{Extended_Pictographic}|\p{Emoji_Presentation}/u);
+          if (uni) catEmoji = uni[0];
+          else if (rawEmoji.length <= 4) catEmoji = rawEmoji;
+        }
+        // emoji custom do servidor não entra no nome do canal — usa 📩
+        const channelName = `${catEmoji}・${safeName}`.slice(0, 100);
+
         const channel = await interaction.guild.channels.create({
-          name: safeName,
+          name: channelName,
           type: ChannelType.GuildText,
           parent: this.config.ticketCategoryId,
           topic: `Ticket de ${interaction.user.tag} | Categoria: ${category.name} | ID: ${interaction.user.id}`,
@@ -762,7 +773,7 @@ class TicketsBot {
             .setMinLength(2)
             .setMaxLength(50)
             .setPlaceholder('ex: pagamento-joao')
-            .setValue(interaction.channel.name.replace(/^ticket-/, '').slice(0, 50))
+            .setValue(interaction.channel.name.replace(/^.*?・/, '').slice(0, 50))
         ));
         return interaction.showModal(modal);
       }
@@ -865,15 +876,13 @@ class TicketsBot {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
       let newName = interaction.fields.getTextInputValue('new_name').trim()
-        .toLowerCase()
         .replace(/\s+/g, '-')
-        .replace(/[^a-z0-9\-\u00C0-\u024F]/gi, '')
         .slice(0, 90);
       if (!newName) {
         return interaction.reply({ content: '❌ Nome inválido.', ephemeral: true });
       }
-      // Discord channel names: lowercase, max 100
-      const finalName = `ticket-${newName}`.slice(0, 100);
+      // Mantém formato emoji・nome se o usuário não colocar emoji
+      const finalName = (newName.includes('・') ? newName : `📩・${newName}`).slice(0, 100);
       try {
         const oldName = interaction.channel.name;
         await interaction.channel.setName(finalName);
