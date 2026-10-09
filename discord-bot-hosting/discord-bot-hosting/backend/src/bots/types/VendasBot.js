@@ -1,4 +1,4 @@
-/**
+  /**
  * Bot de Vendas
  * Commands: !vendas, !configvendas, !configvendas
  * Painel de config: so quem digitou o comando ve (ephemeral)
@@ -459,14 +459,9 @@ class VendasBot {
           return interaction.reply({ content: '❌ Configure a chave PIX primeiro.', ephemeral: true });
         }
         const embed = new EmbedBuilder()
-          .setTitle('💳 Pagamento PIX')
-          .setDescription(
-            `Escaneie o QR Code para pagar.\n\n**Vendedor:** ${pix.name || '—'}\n**Cidade:** ${pix.city || '—'}`
-          )
           .setColor(pix.color || '#3ba55d')
           .setImage(this.pixQrUrl(payload))
-          .setFooter({ text: pix.footer || 'Pagamento via PIX' })
-          .setTimestamp();
+          .setFooter({ text: pix.footer || 'Pagamento via PIX' });
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
 
