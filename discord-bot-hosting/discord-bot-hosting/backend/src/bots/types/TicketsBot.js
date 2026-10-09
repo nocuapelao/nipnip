@@ -114,11 +114,15 @@ class TicketsBot {
   }
 
   buildTicketPanelEmbed() {
+    const cats = (this.config.categories || []).map(c => `• ${c.name}`).join('\n') || '• Suporte';
     const embed = new EmbedBuilder()
-      .setTitle(this.config.title || 'Central de Tickets')
-      .setDescription(this.config.message || 'Selecione uma categoria para abrir um ticket.')
+      .setTitle(this.config.title || '🎫 Central de Tickets')
+      .setDescription(
+        (this.config.message || 'Selecione uma categoria abaixo para abrir um ticket com a nossa equipe.') +
+        `\n\n**Categorias disponíveis**\n${cats}`
+      )
       .setColor(this.color())
-      .setFooter({ text: this.config.footer || 'Sistema de Tickets' });
+      .setFooter({ text: this.config.footer || 'Sistema de Tickets • Resposta o mais rápido possível' });
     if (this.config.banner) embed.setImage(this.config.banner);
     return embed;
   }
@@ -484,21 +488,26 @@ class TicketsBot {
         const ticketEmbed = new EmbedBuilder()
           .setTitle('🎫 Ticket Aberto')
           .setDescription(
-            `**Aberto por:** ${interaction.user}\n` +
-            `**Categoria:** ${category.name}\n\n` +
-            `Olá! Seja bem-vindo ao sistema de tickets.\n` +
-            `Nossa equipe já foi notificada e responderá em breve.\n\n` +
-            `**Assunto**\n>>> ${reason}\n\n` +
-            `**Responsável**\n_Aguardando alguém da equipe assumir_`
+            `Olá ${interaction.user}! Seja bem-vindo ao suporte.\n` +
+            `Nossa equipe já foi notificada e irá te atender em breve.\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `👤 **Aberto por**\n${interaction.user}\n\n` +
+            `📁 **Categoria**\n${category.name}\n\n` +
+            `📝 **Assunto**\n>>> ${reason}\n\n` +
+            `👮 **Responsável**\n_Aguardando a equipe assumir_\n` +
+            `━━━━━━━━━━━━━━━━━━━━`
           )
           .setColor(this.color())
           .setThumbnail(interaction.user.displayAvatarURL({ size: 128 }))
-          .setFooter({ text: this.config.footer || 'Sistema de Tickets' })
+          .setFooter({ text: `${this.config.footer || 'Sistema de Tickets'} • ID: ${interaction.user.id}` })
           .setTimestamp();
 
-        const buttons = new ActionRowBuilder().addComponents(
+        const buttons1 = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('ticket_claim').setLabel('Assumir').setStyle(ButtonStyle.Success).setEmoji('✅'),
-          new ButtonBuilder().setCustomId('ticket_notify').setLabel('Avisar').setStyle(ButtonStyle.Primary).setEmoji('🔔'),
+          new ButtonBuilder().setCustomId('ticket_rename').setLabel('Renomear Ticket').setStyle(ButtonStyle.Primary).setEmoji('✏️'),
+          new ButtonBuilder().setCustomId('ticket_notify').setLabel('Avisar').setStyle(ButtonStyle.Primary).setEmoji('🔔')
+        );
+        const buttons2 = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('ticket_add').setLabel('Add Membro').setStyle(ButtonStyle.Secondary).setEmoji('➕'),
           new ButtonBuilder().setCustomId('ticket_remove').setLabel('Rem Membro').setStyle(ButtonStyle.Secondary).setEmoji('➖'),
           new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar').setStyle(ButtonStyle.Danger).setEmoji('🔒')
@@ -507,7 +516,7 @@ class TicketsBot {
         await channel.send({
           content: `${interaction.user}${this.config.staffRoleId ? ` | <@&${this.config.staffRoleId}>` : ''}`,
           embeds: [ticketEmbed],
-          components: [buttons]
+          components: [buttons1, buttons2]
         });
 
         await interaction.editReply({
@@ -530,7 +539,7 @@ class TicketsBot {
     }
 
     // ── Botões do ticket ──
-    if (interaction.isButton() && ['ticket_close', 'ticket_claim', 'ticket_add', 'ticket_remove', 'ticket_notify'].includes(interaction.customId)) {
+    if (interaction.isButton() && ['ticket_close', 'ticket_claim', 'ticket_add', 'ticket_remove', 'ticket_notify', 'ticket_rename'].includes(interaction.customId)) {
       const ticketData = this.tickets.get(interaction.channel.id);
 
       // Fechar
@@ -582,6 +591,29 @@ class TicketsBot {
         }
 
         this._sendLog(interaction.guild, `✅ Ticket **assumido** por ${interaction.user} — #${interaction.channel.name}`);
+      }
+
+
+      // Renomear Ticket
+      if (interaction.customId === 'ticket_rename') {
+        if (!this.isStaff(interaction.member) && ticketData?.userId !== interaction.user.id) {
+          return interaction.reply({ content: '❌ Sem permissão para renomear este ticket.', ephemeral: true });
+        }
+        const modal = new ModalBuilder()
+          .setCustomId('ticket_rename_modal')
+          .setTitle('Renomear Ticket');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('new_name')
+            .setLabel('Novo nome do canal')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMinLength(2)
+            .setMaxLength(50)
+            .setPlaceholder('ex: pagamento-joao')
+            .setValue(interaction.channel.name.replace(/^🎫｜/, '').slice(0, 50))
+        ));
+        return interaction.showModal(modal);
       }
 
       // Add membro
@@ -648,11 +680,22 @@ class TicketsBot {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
 
+      await interaction.update({
+        content: '🔒 Fechando ticket... gerando transcript e enviando no PV.',
+        components: []
+      });
+
+      // Transcript no PV de quem abriu (antes de apagar o canal)
+      await this.sendTranscriptToOpener(interaction.channel, ticketData);
+
       if (ticketData?.userId) this.userTickets.delete(ticketData.userId);
       this.tickets.delete(interaction.channel.id);
 
-      await interaction.update({ content: '🔒 Ticket fechado. Canal será excluído em 5 segundos...', components: [] });
-      this._sendLog(interaction.guild, `🔒 Ticket **fechado** por ${interaction.user} — #${interaction.channel.name}`);
+      this._sendLog(interaction.guild, `🔒 Ticket **fechado** por ${interaction.user} — #${interaction.channel.name} (transcript enviado)`);
+
+      try {
+        await interaction.channel.send('🔒 Ticket fechado. Canal será excluído em 5 segundos...');
+      } catch (_) {}
 
       setTimeout(async () => {
         try { await interaction.channel.delete('Ticket fechado'); } catch (_) {}
@@ -664,6 +707,42 @@ class TicketsBot {
     }
 
     // Modais add/remove
+
+    if (interaction.isModalSubmit() && interaction.customId === 'ticket_rename_modal') {
+      const ticketData = this.tickets.get(interaction.channel.id);
+      if (!this.isStaff(interaction.member) && ticketData?.userId !== interaction.user.id) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      let newName = interaction.fields.getTextInputValue('new_name').trim()
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9\-\u00C0-\u024F]/gi, '')
+        .slice(0, 90);
+      if (!newName) {
+        return interaction.reply({ content: '❌ Nome inválido.', ephemeral: true });
+      }
+      // Discord channel names: lowercase, max 100
+      const finalName = `🎫｜${newName}`.slice(0, 100);
+      try {
+        const oldName = interaction.channel.name;
+        await interaction.channel.setName(finalName);
+        await interaction.reply({ content: `✅ Ticket renomeado:\n\`${oldName}\` → \`${finalName}\``, ephemeral: true });
+        this._sendLog(interaction.guild, `✏️ Ticket renomeado por ${interaction.user}: \`${oldName}\` → \`${finalName}\``);
+        try {
+          await interaction.channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setDescription(`✏️ Canal renomeado por ${interaction.user}\n\`${oldName}\` → \`${finalName}\``)
+                .setColor(this.color())
+                .setTimestamp()
+            ]
+          });
+        } catch (_) {}
+      } catch (e) {
+        await interaction.reply({ content: `❌ Erro ao renomear: ${e.message}`, ephemeral: true });
+      }
+    }
+
     if (interaction.isModalSubmit() && interaction.customId === 'ticket_add_modal') {
       const userId = interaction.fields.getTextInputValue('user_id').replace(/[<@!>]/g, '');
       try {
@@ -689,6 +768,100 @@ class TicketsBot {
       } catch (e) {
         await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true });
       }
+    }
+  }
+
+
+  async buildTranscript(channel, ticketData) {
+    const lines = [];
+    lines.push(`📋 TRANSCRIPT DO TICKET`);
+    lines.push(`Servidor: ${channel.guild.name}`);
+    lines.push(`Canal: #${channel.name}`);
+    lines.push(`Categoria: ${ticketData?.category || '—'}`);
+    lines.push(`Assunto: ${ticketData?.subject || '—'}`);
+    lines.push(`Aberto por: ${ticketData?.userId ? `<@${ticketData.userId}>` : '—'}`);
+    if (ticketData?.assignee) lines.push(`Responsável: <@${ticketData.assignee}>`);
+    lines.push(`Fechado em: ${new Date().toLocaleString('pt-BR')}`);
+    lines.push(`${'─'.repeat(40)}`);
+    lines.push('');
+
+    try {
+      let lastId = undefined;
+      const all = [];
+      // busca até ~500 msgs (5 páginas)
+      for (let i = 0; i < 5; i++) {
+        const opts = { limit: 100 };
+        if (lastId) opts.before = lastId;
+        const batch = await channel.messages.fetch(opts);
+        if (!batch.size) break;
+        all.push(...batch.values());
+        lastId = batch.last().id;
+        if (batch.size < 100) break;
+      }
+      all.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      for (const msg of all) {
+        if (msg.author.bot && !msg.content && msg.embeds.length) {
+          const e = msg.embeds[0];
+          const title = e.title || '';
+          const desc = (e.description || '').replace(/\n/g, ' ').slice(0, 200);
+          lines.push(`[BOT] ${title} ${desc}`.trim());
+          continue;
+        }
+        const time = new Date(msg.createdTimestamp).toLocaleString('pt-BR');
+        const author = msg.member?.displayName || msg.author.username;
+        let content = msg.content || '';
+        if (msg.attachments.size) {
+          content += (content ? ' ' : '') + [...msg.attachments.values()].map(a => a.url).join(' ');
+        }
+        if (!content && msg.embeds.length) content = '[embed]';
+        if (!content) continue;
+        lines.push(`[${time}] ${author}: ${content}`);
+      }
+    } catch (e) {
+      lines.push(`(Erro ao coletar mensagens: ${e.message})`);
+    }
+
+    lines.push('');
+    lines.push(`${'─'.repeat(40)}`);
+    lines.push('Fim do transcript.');
+    return lines.join('\n');
+  }
+
+  async sendTranscriptToOpener(channel, ticketData) {
+    if (!ticketData?.userId) return;
+    try {
+      const user = await this.client.users.fetch(ticketData.userId);
+      const transcript = await this.buildTranscript(channel, ticketData);
+
+      const embed = new EmbedBuilder()
+        .setTitle('📋 Transcript do Ticket')
+        .setDescription(
+          `Seu ticket em **${channel.guild.name}** foi fechado.\n\n` +
+          `**Canal:** #${channel.name}\n` +
+          `**Categoria:** ${ticketData.category || '—'}\n` +
+          `**Assunto:** ${(ticketData.subject || '—').slice(0, 200)}`
+        )
+        .setColor(this.color())
+        .setFooter({ text: this.config.footer || 'Sistema de Tickets' })
+        .setTimestamp();
+
+      // Discord DM: arquivo se transcript for longo
+      if (transcript.length > 1800) {
+        const { AttachmentBuilder } = require('discord.js');
+        const file = new AttachmentBuilder(Buffer.from(transcript, 'utf8'), {
+          name: `transcript-${channel.name.replace(/[^a-z0-9-]/gi, '')}.txt`
+        });
+        await user.send({ embeds: [embed], files: [file] });
+      } else {
+        await user.send({
+          embeds: [embed],
+          content: '```\n' + transcript.slice(0, 1900) + '\n```'
+        });
+      }
+      this.log('info', `Transcript enviado para ${user.tag}`);
+    } catch (e) {
+      this.log('error', `Falha ao enviar transcript: ${e.message}`);
     }
   }
 
