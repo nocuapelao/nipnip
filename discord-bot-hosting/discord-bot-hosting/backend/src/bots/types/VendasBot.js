@@ -395,16 +395,9 @@ class VendasBot {
       const pix = this.getPixConfig();
       const qrUrl = this.pixQrUrl(payload);
       const embed = new EmbedBuilder()
-        .setTitle('💳 Pagamento PIX')
-        .setDescription(
-          `Escaneie o QR Code abaixo para pagar.\n\n` +
-          `**Vendedor:** ${pix.name || '—'}\n` +
-          `**Cidade:** ${pix.city || '—'}`
-        )
         .setColor(pix.color || '#3ba55d')
         .setImage(qrUrl)
-        .setFooter({ text: pix.footer || 'Pagamento via PIX' })
-        .setTimestamp();
+        .setFooter({ text: pix.footer || 'Pagamento via PIX' });
 
       await message.channel.send({ embeds: [embed] });
       this.log('info', `PIX QR enviado em #${message.channel.name} por ${message.author.tag}`);
