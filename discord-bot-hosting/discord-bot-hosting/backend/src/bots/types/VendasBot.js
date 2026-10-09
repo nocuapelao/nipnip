@@ -42,18 +42,27 @@ class VendasBot {
       try {
         const { REST, Routes, SlashCommandBuilder } = require('discord.js');
         const rest = new REST({ version: '10' }).setToken(this.token);
-        await rest.put(Routes.applicationCommands(this.client.user.id), {
-          body: [
-            new SlashCommandBuilder()
-              .setName('configvendas')
-              .setDescription('Abrir painel privado de configuração das vendas')
-              .toJSON(),
-            new SlashCommandBuilder()
-              .setName('configpix')
-              .setDescription('Configurar chave PIX global (vendas)')
-              .toJSON()
-          ]
-        });
+        const cmds = [
+          new SlashCommandBuilder()
+            .setName('configvendas')
+            .setDescription('Abrir painel privado de configuração das vendas')
+            .toJSON(),
+          new SlashCommandBuilder()
+            .setName('configpix')
+            .setDescription('Configurar chave PIX global (vendas)')
+            .toJSON()
+        ];
+        // Global (pode demorar até 1h)
+        await rest.put(Routes.applicationCommands(this.client.user.id), { body: cmds });
+        // Por servidor = aparece na hora
+        for (const [gid, guild] of this.client.guilds.cache) {
+          try {
+            await rest.put(Routes.applicationGuildCommands(this.client.user.id, gid), { body: cmds });
+            this.log('info', `Slash registrados em ${guild.name}`);
+          } catch (ge) {
+            this.log('error', `Slash guild ${gid}: ${ge.message}`);
+          }
+        }
         this.log('info', 'Slash /configvendas e /configpix registrados');
       } catch (e) {
         this.log('error', `Falha ao registrar slash: ${e.message}`);
@@ -307,6 +316,27 @@ class VendasBot {
       });
     }
 
+    // !configpix — alternativa ao slash (abre modal via botão)
+    if (content === '!configpix') {
+      if (!this.hasPermission(message.member)) {
+        return message.reply('❌ Sem permissão.');
+      }
+      try { await message.delete(); } catch (_) {}
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vpix_open_${message.author.id}`)
+          .setLabel('Configurar PIX')
+          .setStyle(ButtonStyle.Success)
+          .setEmoji('💳')
+      );
+      const sent = await message.channel.send({
+        content: `${message.author} clique para configurar o PIX (só você vê o formulário):`,
+        components: [row]
+      });
+      setTimeout(() => sent.delete().catch(() => {}), 30000);
+      return;
+    }
+
     if (content === '!configvendas') {
       if (!this.hasPermission(message.member)) {
         return message.reply('❌ Você não tem permissão para configurar o bot.');
@@ -378,45 +408,15 @@ class VendasBot {
     // /configpix — 1 chave para todas as vendas
     if (interaction.isChatInputCommand() && interaction.commandName === 'configpix') {
       if (!this.hasPermission(interaction.member)) {
-        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+        return interaction.reply({ content: '❌ Sem permissão. Precisa ser Administrador ou ter o cargo autorizado.', ephemeral: true });
       }
-      const pix = this.getPixConfig();
-      const modal = new ModalBuilder()
-        .setCustomId('vmodal_configpix')
-        .setTitle('Configurar PIX');
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('pix_key')
-            .setLabel('Chave PIX')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(100)
-            .setPlaceholder('CPF, e-mail, telefone ou chave aleatória')
-            .setValue((pix.key || '').slice(0, 100))
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('pix_name')
-            .setLabel('Nome do vendedor')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(25)
-            .setPlaceholder('Nome que aparece no PIX')
-            .setValue((pix.name || '').slice(0, 25))
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('pix_city')
-            .setLabel('Cidade')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(15)
-            .setPlaceholder('Ex: Sao Paulo')
-            .setValue((pix.city || '').slice(0, 15))
-        )
-      );
-      return interaction.showModal(modal);
+      try {
+        await this.showPixModal(interaction);
+      } catch (e) {
+        this.log('error', `configpix modal: ${e.message}`);
+        return interaction.reply({ content: `❌ Erro ao abrir config PIX: ${e.message}`, ephemeral: true }).catch(() => {});
+      }
+      return;
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'configvendas') {
@@ -437,6 +437,24 @@ class VendasBot {
     }
 
     // ── Abrir painel config ──
+    if (interaction.isButton() && interaction.customId.startsWith('vpix_open_')) {
+      const ownerId = interaction.customId.replace('vpix_open_', '');
+      if (interaction.user.id !== ownerId) {
+        return interaction.reply({ content: '❌ Este botão não é para você.', ephemeral: true });
+      }
+      if (!this.hasPermission(interaction.member)) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      try {
+        await this.showPixModal(interaction);
+        try { await interaction.message.delete(); } catch (_) {}
+      } catch (e) {
+        this.log('error', `vpix_open: ${e.message}`);
+        await interaction.reply({ content: `❌ Erro: ${e.message}`, ephemeral: true }).catch(() => {});
+      }
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('vcfg_open_')) {
       const parts = interaction.customId.split('_');
       // vcfg_open_<userId> or vcfg_open_<userId>_<channelId>
@@ -1241,6 +1259,47 @@ class VendasBot {
       this.config.pix = { key: '', name: '', city: '' };
     }
     return this.config.pix;
+  }
+
+  async showPixModal(interaction) {
+    const pix = this.getPixConfig();
+    const modal = new ModalBuilder()
+      .setCustomId('vmodal_configpix')
+      .setTitle('Configurar PIX');
+
+    const keyInput = new TextInputBuilder()
+      .setCustomId('pix_key')
+      .setLabel('Chave PIX')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(100)
+      .setPlaceholder('CPF, e-mail, telefone ou chave aleatoria');
+    if (pix.key) keyInput.setValue(String(pix.key).slice(0, 100));
+
+    const nameInput = new TextInputBuilder()
+      .setCustomId('pix_name')
+      .setLabel('Nome do vendedor')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(25)
+      .setPlaceholder('Nome que aparece no PIX');
+    if (pix.name) nameInput.setValue(String(pix.name).slice(0, 25));
+
+    const cityInput = new TextInputBuilder()
+      .setCustomId('pix_city')
+      .setLabel('Cidade')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(15)
+      .setPlaceholder('Ex: Sao Paulo');
+    if (pix.city) cityInput.setValue(String(pix.city).slice(0, 15));
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(keyInput),
+      new ActionRowBuilder().addComponents(nameInput),
+      new ActionRowBuilder().addComponents(cityInput)
+    );
+    await interaction.showModal(modal);
   }
 
   // CRC16-CCITT (0x1021) para payload PIX
