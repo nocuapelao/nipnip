@@ -392,11 +392,21 @@ class VendasBot {
         return;
       }
 
+      const pix = this.getPixConfig();
       const qrUrl = this.pixQrUrl(payload);
-      // SOMENTE o QR-CODE (sem texto)
-      await message.channel.send({
-        files: [{ attachment: qrUrl, name: 'pix-qrcode.png' }]
-      });
+      const embed = new EmbedBuilder()
+        .setTitle('💳 Pagamento PIX')
+        .setDescription(
+          `Escaneie o QR Code abaixo para pagar.\n\n` +
+          `**Vendedor:** ${pix.name || '—'}\n` +
+          `**Cidade:** ${pix.city || '—'}`
+        )
+        .setColor(pix.color || '#3ba55d')
+        .setImage(qrUrl)
+        .setFooter({ text: pix.footer || 'Pagamento via PIX' })
+        .setTimestamp();
+
+      await message.channel.send({ embeds: [embed] });
       this.log('info', `PIX QR enviado em #${message.channel.name} por ${message.author.tag}`);
       return;
     }
@@ -411,7 +421,7 @@ class VendasBot {
         return interaction.reply({ content: '❌ Sem permissão. Precisa ser Administrador ou ter o cargo autorizado.', ephemeral: true });
       }
       try {
-        await this.showPixModal(interaction);
+        await this.showPixPanel(interaction);
       } catch (e) {
         this.log('error', `configpix modal: ${e.message}`);
         return interaction.reply({ content: `❌ Erro ao abrir config PIX: ${e.message}`, ephemeral: true }).catch(() => {});
@@ -437,6 +447,58 @@ class VendasBot {
     }
 
     // ── Abrir painel config ──
+
+    // ── Botões do painel PIX ──
+    if (interaction.isButton() && interaction.customId.startsWith('pixcfg_')) {
+      if (!this.hasPermission(interaction.member)) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      const id = interaction.customId;
+      const pix = this.getPixConfig();
+
+      if (id === 'pixcfg_refresh') {
+        return interaction.update(this.buildPixConfigPanel());
+      }
+
+      if (id === 'pixcfg_preview') {
+        const payload = this.buildPixPayload();
+        if (!payload) {
+          return interaction.reply({ content: '❌ Configure a chave PIX primeiro.', ephemeral: true });
+        }
+        const embed = new EmbedBuilder()
+          .setTitle('💳 Pagamento PIX')
+          .setDescription(
+            `Escaneie o QR Code para pagar.\n\n**Vendedor:** ${pix.name || '—'}\n**Cidade:** ${pix.city || '—'}`
+          )
+          .setColor(pix.color || '#3ba55d')
+          .setImage(this.pixQrUrl(payload))
+          .setFooter({ text: pix.footer || 'Pagamento via PIX' })
+          .setTimestamp();
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const fields = {
+        pixcfg_key: { title: 'Chave PIX', label: 'Chave PIX', max: 100, current: pix.key },
+        pixcfg_name: { title: 'Nome do vendedor', label: 'Nome do vendedor', max: 25, current: pix.name },
+        pixcfg_city: { title: 'Cidade', label: 'Cidade', max: 15, current: pix.city },
+        pixcfg_color: { title: 'Cor da Sidebar', label: 'Cor Hex (ex: #3ba55d)', max: 7, current: pix.color || '#3ba55d' },
+        pixcfg_footer: { title: 'Footer do Embed', label: 'Texto do footer', max: 100, current: pix.footer || 'Pagamento via PIX' }
+      };
+      const f = fields[id];
+      if (!f) return;
+
+      const modal = new ModalBuilder().setCustomId(`vmodal_${id}`).setTitle(f.title);
+      const input = new TextInputBuilder()
+        .setCustomId('value')
+        .setLabel(f.label)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(f.max);
+      if (f.current) input.setValue(String(f.current).slice(0, f.max));
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('vpix_open_')) {
       const ownerId = interaction.customId.replace('vpix_open_', '');
       if (interaction.user.id !== ownerId) {
@@ -446,7 +508,7 @@ class VendasBot {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
       try {
-        await this.showPixModal(interaction);
+        await this.showPixPanel(interaction);
         try { await interaction.message.delete(); } catch (_) {}
       } catch (e) {
         this.log('error', `vpix_open: ${e.message}`);
@@ -590,18 +652,26 @@ class VendasBot {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
 
-      // Salvar PIX global
-      if (interaction.customId === 'vmodal_configpix') {
-        const key = interaction.fields.getTextInputValue('pix_key').trim();
-        const name = interaction.fields.getTextInputValue('pix_name').trim();
-        const city = interaction.fields.getTextInputValue('pix_city').trim();
-        this.config.pix = { key, name, city };
-        this.log('info', `PIX configurado por ${interaction.user.tag}`);
-        return interaction.reply({
-          content: `✅ **PIX configurado** (válido para todas as vendas)\n\n🔑 Chave: \`${key}\`\n👤 Nome: **${name}**\n🏙️ Cidade: **${city}**\n\nUse \`!pix\` dentro de um canal de venda para gerar o QR Code.`,
-          ephemeral: true
-        });
+      // Salvar campos do painel PIX
+      if (interaction.customId.startsWith('vmodal_pixcfg_')) {
+        const field = interaction.customId.replace('vmodal_pixcfg_', '');
+        const value = interaction.fields.getTextInputValue('value').trim();
+        const pix = this.getPixConfig();
+        if (field === 'key') pix.key = value;
+        else if (field === 'name') pix.name = value;
+        else if (field === 'city') pix.city = value;
+        else if (field === 'color') pix.color = value.startsWith('#') ? value : `#${value}`;
+        else if (field === 'footer') pix.footer = value;
+        this.config.pix = pix;
+        this.log('info', `PIX ${field} atualizado por ${interaction.user.tag}`);
+        try {
+          await interaction.update(this.buildPixConfigPanel());
+        } catch {
+          await interaction.reply({ content: '✅ PIX atualizado!', ephemeral: true });
+        }
+        return;
       }
+
 
       const key = interaction.customId.replace('vmodal_', '');
 
@@ -1255,51 +1325,63 @@ class VendasBot {
 
   // ── PIX (1 chave global para todas as vendas) ──
   getPixConfig() {
-    if (!this.config.pix) {
-      this.config.pix = { key: '', name: '', city: '' };
+    if (!this.config.pix || typeof this.config.pix !== 'object') {
+      this.config.pix = {
+        key: '',
+        name: '',
+        city: '',
+        color: '#3ba55d',
+        footer: 'Pagamento via PIX'
+      };
+    }
+    if (!this.config.pix.color) this.config.pix.color = '#3ba55d';
+    if (this.config.pix.footer == null || this.config.pix.footer === '') {
+      this.config.pix.footer = 'Pagamento via PIX';
     }
     return this.config.pix;
   }
 
-  async showPixModal(interaction) {
+  buildPixConfigPanel() {
     const pix = this.getPixConfig();
-    const modal = new ModalBuilder()
-      .setCustomId('vmodal_configpix')
-      .setTitle('Configurar PIX');
+    const keyPreview = pix.key
+      ? (pix.key.length > 24 ? pix.key.slice(0, 10) + '...' + pix.key.slice(-8) : pix.key)
+      : '_Não configurada_';
 
-    const keyInput = new TextInputBuilder()
-      .setCustomId('pix_key')
-      .setLabel('Chave PIX')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(100)
-      .setPlaceholder('CPF, e-mail, telefone ou chave aleatoria');
-    if (pix.key) keyInput.setValue(String(pix.key).slice(0, 100));
+    const embed = new EmbedBuilder()
+      .setTitle('💳 Painel de Configuração — PIX')
+      .setDescription(
+        'Só você está vendo este painel.\n' +
+        'A chave PIX é **única** para todas as vendas.\n\n' +
+        'Use os botões para customizar.'
+      )
+      .setColor(pix.color || '#3ba55d')
+      .addFields(
+        { name: '🔑 Chave PIX', value: keyPreview, inline: true },
+        { name: '👤 Nome do vendedor', value: pix.name || '_Não definido_', inline: true },
+        { name: '🏙️ Cidade', value: pix.city || '_Não definida_', inline: true },
+        { name: '🎨 Cor da Sidebar', value: pix.color || '#3ba55d', inline: true },
+        { name: '📌 Footer do Embed', value: (pix.footer || 'Pagamento via PIX').slice(0, 100), inline: true }
+      )
+      .setFooter({ text: pix.footer || 'Pagamento via PIX' })
+      .setTimestamp();
 
-    const nameInput = new TextInputBuilder()
-      .setCustomId('pix_name')
-      .setLabel('Nome do vendedor')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(25)
-      .setPlaceholder('Nome que aparece no PIX');
-    if (pix.name) nameInput.setValue(String(pix.name).slice(0, 25));
-
-    const cityInput = new TextInputBuilder()
-      .setCustomId('pix_city')
-      .setLabel('Cidade')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(15)
-      .setPlaceholder('Ex: Sao Paulo');
-    if (pix.city) cityInput.setValue(String(pix.city).slice(0, 15));
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(keyInput),
-      new ActionRowBuilder().addComponents(nameInput),
-      new ActionRowBuilder().addComponents(cityInput)
+    const row1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('pixcfg_key').setLabel('Chave PIX').setStyle(ButtonStyle.Primary).setEmoji('🔑'),
+      new ButtonBuilder().setCustomId('pixcfg_name').setLabel('Nome').setStyle(ButtonStyle.Primary).setEmoji('👤'),
+      new ButtonBuilder().setCustomId('pixcfg_city').setLabel('Cidade').setStyle(ButtonStyle.Primary).setEmoji('🏙️')
     );
-    await interaction.showModal(modal);
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('pixcfg_color').setLabel('Cor Sidebar').setStyle(ButtonStyle.Secondary).setEmoji('🎨'),
+      new ButtonBuilder().setCustomId('pixcfg_footer').setLabel('Footer').setStyle(ButtonStyle.Secondary).setEmoji('📌'),
+      new ButtonBuilder().setCustomId('pixcfg_preview').setLabel('Preview').setStyle(ButtonStyle.Success).setEmoji('👁️'),
+      new ButtonBuilder().setCustomId('pixcfg_refresh').setLabel('Atualizar').setStyle(ButtonStyle.Secondary).setEmoji('🔄')
+    );
+
+    return { embeds: [embed], components: [row1, row2], ephemeral: true };
+  }
+
+  async showPixPanel(interaction) {
+    return interaction.reply(this.buildPixConfigPanel());
   }
 
   // CRC16-CCITT (0x1021) para payload PIX
