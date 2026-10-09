@@ -7,7 +7,8 @@ const TYPE_LABELS = {
   webhook: 'Webhook',
   facs: 'FACs',
   tickets: 'Tickets',
-  discord: 'Discord'
+  discord: 'Discord',
+  vendas: 'Vendas'
 };
 
 function formatUptime(seconds) {
@@ -220,6 +221,12 @@ export default function BotDetails() {
                 <li><code>!discord</code> — Painel de administracao</li>
                 <li><code>!configdiscord</code> — Configuracoes</li>
                 <li><code>!ban / !kick / !timeout / !clear</code> — Moderacao</li>
+              </ul>
+            )}
+            {bot.type === 'vendas' && (
+              <ul style={{ paddingLeft: '1.2rem', lineHeight: 1.8 }}>
+                <li><code>!vendas</code> — Painel de vendas</li>
+                <li><code>!configvendas</code> / <code>/configvendas</code> — Config privada</li>
               </ul>
             )}
           </div>
