@@ -18,7 +18,7 @@ router.get('/', (req, res) => {
     const restarting = db.prepare("SELECT COUNT(*) as c FROM bots WHERE user_id = ? AND status = 'restarting'").get(req.user.id).c;
 
     const byType = {};
-    for (const type of ['webhook', 'facs', 'tickets', 'discord']) {
+    for (const type of ['webhook', 'facs', 'tickets', 'discord', 'vendas']) {
       byType[type] = db.prepare('SELECT COUNT(*) as c FROM bots WHERE user_id = ? AND type = ?')
         .get(req.user.id, type).c;
     }
