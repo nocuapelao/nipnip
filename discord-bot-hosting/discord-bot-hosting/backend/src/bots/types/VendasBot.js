@@ -81,6 +81,81 @@ class VendasBot {
     return this.config.sidebarColor || '#5865F2';
   }
 
+  // ── Painéis por canal (máximo 10) ──
+  ensurePanels() {
+    if (!this.config.panels || typeof this.config.panels !== 'object' || Array.isArray(this.config.panels)) {
+      this.config.panels = {};
+    }
+    return this.config.panels;
+  }
+
+  panelCount() {
+    return Object.keys(this.ensurePanels()).length;
+  }
+
+  getPanel(channelId) {
+    return this.ensurePanels()[channelId] || null;
+  }
+
+  getOrCreatePanel(channelId) {
+    const panels = this.ensurePanels();
+    if (panels[channelId]) return panels[channelId];
+    if (Object.keys(panels).length >= 10) return null;
+    panels[channelId] = {
+      title: '🛒 Central de Vendas',
+      message: 'Selecione uma categoria para abrir uma venda.',
+      footer: 'Sistema de Vendas',
+      sidebarColor: '#3ba55d',
+      banner: null,
+      thumbnail: null,
+      categories: [{ name: 'Produto', id: 'produto', emoji: '🛒' }],
+      ticketCategoryId: null,
+      logChannelId: null,
+      staffRoleId: null,
+      authorizedRoleId: null
+    };
+    return panels[channelId];
+  }
+
+  usePanel(channelId) {
+    let p = this.getPanel(channelId);
+    if (!p) {
+      p = this.getOrCreatePanel(channelId);
+      if (!p) return false;
+    }
+    this.config.title = p.title;
+    this.config.message = p.message;
+    this.config.footer = p.footer;
+    this.config.sidebarColor = p.sidebarColor || '#3ba55d';
+    this.config.banner = p.banner;
+    this.config.thumbnail = p.thumbnail;
+    this.config.categories = p.categories || [];
+    this.config.ticketCategoryId = p.ticketCategoryId;
+    this.config.logChannelId = p.logChannelId;
+    this.config.staffRoleId = p.staffRoleId;
+    this.config.authorizedRoleId = p.authorizedRoleId;
+    this._activePanelChannelId = channelId;
+    return true;
+  }
+
+  saveActivePanel() {
+    if (!this._activePanelChannelId) return;
+    this.ensurePanels()[this._activePanelChannelId] = {
+      title: this.config.title,
+      message: this.config.message,
+      footer: this.config.footer,
+      sidebarColor: this.config.sidebarColor,
+      banner: this.config.banner,
+      thumbnail: this.config.thumbnail,
+      categories: this.config.categories,
+      ticketCategoryId: this.config.ticketCategoryId,
+      logChannelId: this.config.logChannelId,
+      staffRoleId: this.config.staffRoleId,
+      authorizedRoleId: this.config.authorizedRoleId
+    };
+  }
+
+
   hasPermission(member) {
     if (!this.config.authorizedRoleId) {
       return member.permissions.has(PermissionFlagsBits.Administrator);
@@ -153,7 +228,7 @@ class VendasBot {
 
     const embed = new EmbedBuilder()
       .setTitle('⚙️ Painel de Configuração — Vendas')
-      .setDescription('Só você está vendo este painel. Use os botões abaixo para customizar.')
+      .setDescription(`Só você está vendo este painel.\n📌 Canal: <#${this._activePanelChannelId || '?'}>\n📊 Painéis: **${this.panelCount()}/10**\n\nUse os botões para customizar **este canal**.`)
       .setColor(this.color())
       .addFields(
         { name: '📋 Título', value: this.config.title || 'Central de Vendas', inline: true },
@@ -206,11 +281,22 @@ class VendasBot {
     const content = message.content.trim();
 
     if (content === '!vendas') {
-      const categories = this.config.categories || [{ name: 'Suporte', id: 'support' }];
-      if (categories.length === 0) {
-        return message.reply('❌ Nenhuma categoria configurada. Use `!configvendas` para adicionar.');
+      if (!this.getPanel(message.channel.id)) {
+        if (this.panelCount() >= 10) {
+          return message.reply('❌ Limite de **10 canais** de vendas atingido. Configure em um canal já existente ou remova um painel.');
+        }
+        if (!this.hasPermission(message.member)) {
+          return message.reply('❌ Este canal ainda não tem painel de vendas. Peça a um admin para usar `!configvendas` aqui.');
+        }
+        this.getOrCreatePanel(message.channel.id);
       }
-
+      if (!this.usePanel(message.channel.id)) {
+        return message.reply('❌ Não foi possível carregar o painel deste canal.');
+      }
+      const categories = this.config.categories || [];
+      if (categories.length === 0) {
+        return message.reply('❌ Nenhuma categoria neste canal. Use `!configvendas` para adicionar.');
+      }
       await message.channel.send({
         embeds: [this.buildVendaPanelEmbed()],
         components: [this.buildVendaSelectRow()]
@@ -222,22 +308,29 @@ class VendasBot {
         return message.reply('❌ Você não tem permissão para configurar o bot.');
       }
 
+      // Painel deste canal (cria se ainda não existe e houver vaga)
+      if (!this.getPanel(message.channel.id)) {
+        if (this.panelCount() >= 10) {
+          return message.reply(`❌ Limite de **10 canais** atingido (${this.panelCount()}/10).`);
+        }
+        this.getOrCreatePanel(message.channel.id);
+      }
+      this.usePanel(message.channel.id);
+
       try { await message.delete(); } catch (_) {}
 
-      // Mensagem curta com botão — ao clicar abre painel EFÊMERO ("Só pode ver esta mensagem")
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`vcfg_open_${message.author.id}`)
+          .setCustomId(`vcfg_open_${message.author.id}_${message.channel.id}`)
           .setLabel('Abrir painel (só você vê)')
           .setStyle(ButtonStyle.Primary)
           .setEmoji('⚙️')
       );
 
       const sent = await message.channel.send({
-        content: `${message.author} clique para abrir a configuração:`,
+        content: `${message.author} configurar vendas neste canal (**${this.panelCount()}/10**):`,
         components: [row]
       });
-      // some em 30s se ninguém clicar
       setTimeout(() => sent.delete().catch(() => {}), 30000);
     }
   }
@@ -248,19 +341,32 @@ class VendasBot {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
+      if (!interaction.channel) {
+        return interaction.reply({ content: '❌ Use este comando em um canal de texto.', ephemeral: true });
+      }
+      if (!this.getPanel(interaction.channel.id)) {
+        if (this.panelCount() >= 10) {
+          return interaction.reply({ content: `❌ Limite de **10 canais** atingido (${this.panelCount()}/10).`, ephemeral: true });
+        }
+        this.getOrCreatePanel(interaction.channel.id);
+      }
+      this.usePanel(interaction.channel.id);
       return interaction.reply(this.buildConfigPanel());
     }
 
     // ── Abrir painel config ──
     if (interaction.isButton() && interaction.customId.startsWith('vcfg_open_')) {
-      const ownerId = interaction.customId.replace('vcfg_open_', '');
+      const parts = interaction.customId.split('_');
+      // vcfg_open_<userId> or vcfg_open_<userId>_<channelId>
+      const ownerId = parts[2];
+      const channelId = parts[3] || interaction.channel?.id;
       if (interaction.user.id !== ownerId) {
         return interaction.reply({ content: '❌ Este botão não é para você.', ephemeral: true });
       }
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
-      // Painel com "Só pode ver esta mensagem"
+      if (channelId) this.usePanel(channelId);
       await interaction.reply(this.buildConfigPanel());
       try { await interaction.message.delete(); } catch (_) {}
       return;
@@ -271,6 +377,7 @@ class VendasBot {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
       }
+      if (interaction.channel?.id) this.usePanel(interaction.channel.id);
 
       const id = interaction.customId;
 
@@ -396,6 +503,7 @@ class VendasBot {
           return interaction.reply({ content: '❌ Essa categoria já existe.', ephemeral: true });
         }
         this.config.categories.push({ name, id: catId, emoji: emoji || '📩' });
+        this.saveActivePanel();
         this.log('info', `Categoria adicionada: ${name} (${emoji || '📩'})`);
         try {
           await interaction.update(this.buildConfigPanel());
@@ -418,9 +526,10 @@ class VendasBot {
           return interaction.reply({ content: '❌ Categoria não encontrada.', ephemeral: true });
         }
         cat.emoji = emoji || '📩';
+        this.saveActivePanel();
         this.log('info', `Emoji da categoria ${cat.name} → ${cat.emoji}`);
         await interaction.reply({
-          content: `✅ Emoji de **${cat.name}** atualizado para ${cat.emoji}\n\n⚠️ Rode \`!vendas\` de novo no canal para o painel público atualizar.`,
+          content: `✅ Emoji de **${cat.name}** atualizado para ${cat.emoji}\n\n⚠️ Rode \`!vendas\` de novo neste canal para o painel atualizar.`,
           ephemeral: true
         });
         return;
@@ -450,6 +559,7 @@ class VendasBot {
           if (this.config.categories.length === before) {
             return interaction.reply({ content: '❌ Categoria não encontrada.', ephemeral: true });
           }
+          this.saveActivePanel();
           break;
         }
         case 'vcfg_category':
@@ -468,14 +578,15 @@ class VendasBot {
           return interaction.reply({ content: '❌ Ação desconhecida.', ephemeral: true });
       }
 
-      this.log('info', `Config updated by ${interaction.user.tag}: ${key}`);
-      this._sendLog(interaction.guild, `⚙️ Config alterada por ${interaction.user}: \`${key}\``);
+      this.saveActivePanel();
+      this.log('info', `Config updated by ${interaction.user.tag}: ${key} (canal ${this._activePanelChannelId})`);
+      this._sendLog(interaction.guild, `⚙️ Config de vendas alterada por ${interaction.user}: \`${key}\` em <#${this._activePanelChannelId}>`);
 
       try {
         await interaction.update(this.buildConfigPanel());
       } catch {
         await interaction.reply({
-          content: '✅ Configuração salva! Use **Atualizar** no painel ou digite `!configvendas` de novo.',
+          content: '✅ Configuração salva neste canal! Use **Atualizar** ou `!configvendas` de novo.',
           ephemeral: true
         });
       }
@@ -514,6 +625,9 @@ class VendasBot {
 
     // ── Select categoria (CORREÇÃO DO BUG) ──
     if (interaction.isStringSelectMenu() && interaction.customId === 'venda_select_category') {
+      if (!this.usePanel(interaction.channel.id)) {
+        return interaction.reply({ content: '❌ Painel deste canal não configurado.', ephemeral: true });
+      }
       const categoryId = interaction.values[0];
       const category = (this.config.categories || []).find(c => (c.id || c.name) === categoryId) ||
                        { name: categoryId, id: categoryId };
