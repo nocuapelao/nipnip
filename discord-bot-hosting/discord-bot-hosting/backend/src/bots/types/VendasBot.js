@@ -46,11 +46,15 @@ class VendasBot {
           body: [
             new SlashCommandBuilder()
               .setName('configvendas')
-              .setDescription('Abrir painel privado de configuração dos vendas')
+              .setDescription('Abrir painel privado de configuração das vendas')
+              .toJSON(),
+            new SlashCommandBuilder()
+              .setName('configpix')
+              .setDescription('Configurar chave PIX global (vendas)')
               .toJSON()
           ]
         });
-        this.log('info', 'Slash /configvendas registrado');
+        this.log('info', 'Slash /configvendas e /configpix registrados');
       } catch (e) {
         this.log('error', `Falha ao registrar slash: ${e.message}`);
       }
@@ -333,10 +337,88 @@ class VendasBot {
       });
       setTimeout(() => sent.delete().catch(() => {}), 30000);
     }
+
+
+    // !pix — só QR Code no canal da venda; apaga o comando na hora
+    if (content === '!pix') {
+      try { await message.delete(); } catch (_) {}
+
+      // Só funciona dentro de um canal de venda aberto
+      const vendaData = this.vendas.get(message.channel.id);
+      if (!vendaData) {
+        try {
+          const warn = await message.channel.send('❌ Use `!pix` apenas dentro de um canal de **venda** aberta.');
+          setTimeout(() => warn.delete().catch(() => {}), 4000);
+        } catch (_) {}
+        return;
+      }
+
+      const payload = this.buildPixPayload();
+      if (!payload) {
+        try {
+          const warn = await message.channel.send('❌ PIX ainda não configurado. Um admin deve usar `/configpix`.');
+          setTimeout(() => warn.delete().catch(() => {}), 5000);
+        } catch (_) {}
+        return;
+      }
+
+      const qrUrl = this.pixQrUrl(payload);
+      // SOMENTE o QR-CODE (sem texto)
+      await message.channel.send({
+        files: [{ attachment: qrUrl, name: 'pix-qrcode.png' }]
+      });
+      this.log('info', `PIX QR enviado em #${message.channel.name} por ${message.author.tag}`);
+      return;
+    }
+
   }
 
   async handleInteraction(interaction) {
     // ── Slash /configvendas → painel 100% privado ──
+    // /configpix — 1 chave para todas as vendas
+    if (interaction.isChatInputCommand() && interaction.commandName === 'configpix') {
+      if (!this.hasPermission(interaction.member)) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      const pix = this.getPixConfig();
+      const modal = new ModalBuilder()
+        .setCustomId('vmodal_configpix')
+        .setTitle('Configurar PIX');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('pix_key')
+            .setLabel('Chave PIX')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(100)
+            .setPlaceholder('CPF, e-mail, telefone ou chave aleatória')
+            .setValue((pix.key || '').slice(0, 100))
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('pix_name')
+            .setLabel('Nome do vendedor')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(25)
+            .setPlaceholder('Nome que aparece no PIX')
+            .setValue((pix.name || '').slice(0, 25))
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('pix_city')
+            .setLabel('Cidade')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(15)
+            .setPlaceholder('Ex: Sao Paulo')
+            .setValue((pix.city || '').slice(0, 15))
+        )
+      );
+      return interaction.showModal(modal);
+    }
+
     if (interaction.isChatInputCommand() && interaction.commandName === 'configvendas') {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
@@ -488,6 +570,19 @@ class VendasBot {
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vmodal_')) {
       if (!this.hasPermission(interaction.member)) {
         return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+
+      // Salvar PIX global
+      if (interaction.customId === 'vmodal_configpix') {
+        const key = interaction.fields.getTextInputValue('pix_key').trim();
+        const name = interaction.fields.getTextInputValue('pix_name').trim();
+        const city = interaction.fields.getTextInputValue('pix_city').trim();
+        this.config.pix = { key, name, city };
+        this.log('info', `PIX configurado por ${interaction.user.tag}`);
+        return interaction.reply({
+          content: `✅ **PIX configurado** (válido para todas as vendas)\n\n🔑 Chave: \`${key}\`\n👤 Nome: **${name}**\n🏙️ Cidade: **${city}**\n\nUse \`!pix\` dentro de um canal de venda para gerar o QR Code.`,
+          ephemeral: true
+        });
       }
 
       const key = interaction.customId.replace('vmodal_', '');
@@ -1137,6 +1232,70 @@ class VendasBot {
     } catch (e) {
       this.log('error', `Falha ao enviar transcript: ${e.message}`);
     }
+  }
+
+
+  // ── PIX (1 chave global para todas as vendas) ──
+  getPixConfig() {
+    if (!this.config.pix) {
+      this.config.pix = { key: '', name: '', city: '' };
+    }
+    return this.config.pix;
+  }
+
+  // CRC16-CCITT (0x1021) para payload PIX
+  crc16(str) {
+    let crc = 0xFFFF;
+    for (let i = 0; i < str.length; i++) {
+      crc ^= str.charCodeAt(i) << 8;
+      for (let j = 0; j < 8; j++) {
+        if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+        else crc <<= 1;
+        crc &= 0xFFFF;
+      }
+    }
+    return crc.toString(16).toUpperCase().padStart(4, '0');
+  }
+
+  emv(id, value) {
+    const v = String(value);
+    const len = String(v.length).padStart(2, '0');
+    return `${id}${len}${v}`;
+  }
+
+  buildPixPayload() {
+    const pix = this.getPixConfig();
+    const key = (pix.key || '').trim();
+    const name = (pix.name || 'VENDEDOR').trim().substring(0, 25).toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9 ]/g, '') || 'VENDEDOR';
+    const city = (pix.city || 'SAO PAULO').trim().substring(0, 15).toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9 ]/g, '') || 'SAO PAULO';
+
+    if (!key) return null;
+
+    // Merchant Account Information (GUI + key)
+    const gui = this.emv('00', 'br.gov.bcb.pix');
+    const chave = this.emv('01', key);
+    const merchantAccount = this.emv('26', gui + chave);
+
+    let payload = '';
+    payload += this.emv('00', '01');           // Payload Format Indicator
+    payload += this.emv('01', '11');           // Point of Initiation - static
+    payload += merchantAccount;
+    payload += this.emv('52', '0000');         // MCC
+    payload += this.emv('53', '986');          // BRL
+    payload += this.emv('58', 'BR');
+    payload += this.emv('59', name);
+    payload += this.emv('60', city);
+    payload += this.emv('62', this.emv('05', '***')); // txid
+    payload += '6304';                         // CRC placeholder
+    payload += this.crc16(payload);
+    return payload;
+  }
+
+  pixQrUrl(payload) {
+    const data = encodeURIComponent(payload);
+    return `https://api.qrserver.com/v1/create-qr-code/?size=400x400&margin=10&data=${data}`;
   }
 
   _sendLog(guild, message) {
