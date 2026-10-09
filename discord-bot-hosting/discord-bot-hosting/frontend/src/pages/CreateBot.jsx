@@ -31,6 +31,13 @@ const BOT_TYPES = [
     icon: Shield,
     description: 'Administracao completa do servidor: moderacao, logs, autorole e automacoes.',
     color: '#ed4245'
+  },
+  {
+    type: 'vendas',
+    label: 'Bot de Vendas',
+    icon: Ticket,
+    description: 'Sistema de vendas com categorias, painel e atendimento (limite 3 bots).',
+    color: '#3ba55d'
   }
 ];
 
@@ -38,7 +45,8 @@ const TYPE_LABELS = {
   webhook: 'Webhook',
   facs: 'FACs',
   tickets: 'Tickets',
-  discord: 'Discord'
+  discord: 'Discord',
+  vendas: 'Vendas'
 };
 
 export default function CreateBot() {
