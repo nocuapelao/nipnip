@@ -103,16 +103,14 @@ class TicketsBot {
         value: c.id || `cat_${i}`,
         description: `Abrir ticket: ${c.name}`.slice(0, 100)
       };
-      // emoji unicode ou custom do Discord
-      if (c.emoji) {
-        const custom = c.emoji.match(/^<?a?:([a-zA-Z0-9_]+):(\d+)>?$/);
-        if (custom) {
-          opt.emoji = { name: custom[1], id: custom[2] };
-        } else {
-          opt.emoji = c.emoji;
-        }
+      const raw = (c.emoji || '📩').trim();
+      const custom = raw.match(/^<?(a?):([a-zA-Z0-9_]+):(\d+)>?$/);
+      if (custom) {
+        opt.emoji = { animated: custom[1] === 'a', name: custom[2], id: custom[3] };
       } else {
-        opt.emoji = '📩';
+        // unicode — pega só o primeiro emoji se colarem texto junto
+        const uni = raw.match(/\p{Extended_Pictographic}|\p{Emoji_Presentation}/u);
+        opt.emoji = uni ? uni[0] : '📩';
       }
       return opt;
     });
@@ -318,31 +316,35 @@ class TicketsBot {
         return interaction.showModal(modal);
       }
 
-      // Editar emoji de categoria existente
+      // Editar emoji — escolhe a categoria no select
       if (id === 'tcfg_editemoji') {
-        const modal = new ModalBuilder()
-          .setCustomId('tmodal_tcfg_editemoji')
-          .setTitle('Emoji da Categoria');
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('cat_name')
-              .setLabel('Nome exato da categoria')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-              .setMaxLength(80)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('cat_emoji')
-              .setLabel('Novo emoji')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-              .setMaxLength(80)
-              .setPlaceholder('📩 ou <:nome:123456789>')
-          )
+        const categories = this.config.categories || [];
+        if (categories.length === 0) {
+          return interaction.reply({ content: '❌ Nenhuma categoria cadastrada.', ephemeral: true });
+        }
+        const options = categories.slice(0, 25).map((c, i) => {
+          const opt = {
+            label: c.name.slice(0, 100),
+            value: c.id || `cat_${i}`,
+            description: `Emoji atual: ${c.emoji || '📩'}`.slice(0, 100)
+          };
+          const raw = (c.emoji || '📩').trim();
+          const custom = raw.match(/^<?(a?):([a-zA-Z0-9_]+):(\d+)>?$/);
+          if (custom) opt.emoji = { animated: custom[1] === 'a', name: custom[2], id: custom[3] };
+          else opt.emoji = raw;
+          return opt;
+        });
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('tcfg_pick_cat_emoji')
+            .setPlaceholder('Escolha a categoria para trocar o emoji')
+            .addOptions(options)
         );
-        return interaction.showModal(modal);
+        return interaction.reply({
+          content: '😀 Selecione a categoria que deseja alterar o emoji:',
+          components: [row],
+          ephemeral: true
+        });
       }
 
       const modals = {
@@ -403,22 +405,24 @@ class TicketsBot {
         return;
       }
 
-      // Editar emoji
-      if (key === 'tcfg_editemoji') {
-        const name = interaction.fields.getTextInputValue('cat_name').trim();
+      // Editar emoji (customId: tcfg_editemoji_<catId>)
+      if (key.startsWith('tcfg_editemoji')) {
+        const catValue = key.replace('tcfg_editemoji_', '').replace('tcfg_editemoji', '');
         const emoji = interaction.fields.getTextInputValue('cat_emoji').trim();
         if (!this.config.categories) this.config.categories = [];
-        const cat = this.config.categories.find(c => c.name.toLowerCase() === name.toLowerCase());
+        let cat = null;
+        if (catValue) {
+          cat = this.config.categories.find((c, i) => (c.id || `cat_${i}`) === catValue);
+        }
         if (!cat) {
           return interaction.reply({ content: '❌ Categoria não encontrada.', ephemeral: true });
         }
-        cat.emoji = emoji;
-        this.log('info', `Emoji da categoria ${name} → ${emoji}`);
-        try {
-          await interaction.update(this.buildConfigPanel());
-        } catch {
-          await interaction.reply({ content: `✅ Emoji de **${name}** atualizado para ${emoji}`, ephemeral: true });
-        }
+        cat.emoji = emoji || '📩';
+        this.log('info', `Emoji da categoria ${cat.name} → ${cat.emoji}`);
+        await interaction.reply({
+          content: `✅ Emoji de **${cat.name}** atualizado para ${cat.emoji}\n\n⚠️ Rode \`!ticket\` de novo no canal para o painel público atualizar.`,
+          ephemeral: true
+        });
         return;
       }
 
@@ -475,6 +479,37 @@ class TicketsBot {
           ephemeral: true
         });
       }
+    }
+
+
+    // Escolheu categoria para editar emoji
+    if (interaction.isStringSelectMenu() && interaction.customId === 'tcfg_pick_cat_emoji') {
+      if (!this.hasPermission(interaction.member)) {
+        return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      }
+      const catValue = interaction.values[0];
+      const cat = (this.config.categories || []).find(
+        (c, i) => (c.id || `cat_${i}`) === catValue
+      );
+      if (!cat) {
+        return interaction.reply({ content: '❌ Categoria não encontrada.', ephemeral: true });
+      }
+      const modal = new ModalBuilder()
+        .setCustomId(`tmodal_tcfg_editemoji_${catValue}`)
+        .setTitle(`Emoji: ${cat.name}`.slice(0, 45));
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('cat_emoji')
+            .setLabel('Novo emoji')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(80)
+            .setPlaceholder('Ex: ❓ 💰 📩 ou <:nome:ID>')
+            .setValue((cat.emoji || '📩').slice(0, 80))
+        )
+      );
+      return interaction.showModal(modal);
     }
 
     // ── Select categoria (CORREÇÃO DO BUG) ──
@@ -553,13 +588,17 @@ class TicketsBot {
       try {
         await interaction.deferReply({ ephemeral: true });
 
-        const safeName = interaction.user.username
+        // Nome do canal = só o nome da pessoa no Discord
+        const displayName = (interaction.member?.displayName || interaction.user.globalName || interaction.user.username || 'user');
+        const safeName = displayName
           .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
           .replace(/[^a-z0-9]/g, '')
-          .slice(0, 12) || 'user';
+          .slice(0, 20) || 'user';
 
         const channel = await interaction.guild.channels.create({
-          name: `🎫｜${safeName}-${String(category.name).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10)}`,
+          name: safeName,
           type: ChannelType.GuildText,
           parent: this.config.ticketCategoryId,
           topic: `Ticket de ${interaction.user.tag} | Categoria: ${category.name} | ID: ${interaction.user.id}`,
@@ -626,7 +665,7 @@ class TicketsBot {
         );
 
         await channel.send({
-          content: `${interaction.user}${this.config.staffRoleId ? ` | <@&${this.config.staffRoleId}>` : ''}`,
+          content: `${interaction.user}${this.config.staffRoleId ? `\n<@&${this.config.staffRoleId}>` : ''}`,
           embeds: [ticketEmbed],
           components: [buttons1, buttons2]
         });
@@ -723,7 +762,7 @@ class TicketsBot {
             .setMinLength(2)
             .setMaxLength(50)
             .setPlaceholder('ex: pagamento-joao')
-            .setValue(interaction.channel.name.replace(/^🎫｜/, '').slice(0, 50))
+            .setValue(interaction.channel.name.replace(/^ticket-/, '').slice(0, 50))
         ));
         return interaction.showModal(modal);
       }
@@ -834,7 +873,7 @@ class TicketsBot {
         return interaction.reply({ content: '❌ Nome inválido.', ephemeral: true });
       }
       // Discord channel names: lowercase, max 100
-      const finalName = `🎫｜${newName}`.slice(0, 100);
+      const finalName = `ticket-${newName}`.slice(0, 100);
       try {
         const oldName = interaction.channel.name;
         await interaction.channel.setName(finalName);
